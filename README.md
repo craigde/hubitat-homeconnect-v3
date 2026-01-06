@@ -79,17 +79,7 @@ The v3 integration uses a three-component architecture:
 1. A Home Connect account with registered appliances
 2. Home Connect Developer account ([developer.home-connect.com](https://developer.home-connect.com))
 
-### Step 1: Create Home Connect Application
-
-1. Log in to the [Home Connect Developer Portal](https://developer.home-connect.com)
-2. Create a new application with these settings:
-   - **Application ID**: `hubitat-homeconnect-integration`
-   - **OAuth Flow**: Authorization Code Grant Flow
-   - **Redirect URI**: `https://cloud.hubitat.com/oauth/stateredirect` (or your hub's cloud URL + `/oauth/callback`)
-3. Note your **Client ID** and **Client Secret**
-4. **Wait 30 minutes** - Home Connect requires propagation time
-
-### Step 2: Install Drivers and App
+### Step 1: Install Drivers and App in Hubitat
 
 1. In Hubitat, go to **Drivers Code**
 2. Click **+ New Driver** and paste the code for:
@@ -98,10 +88,22 @@ The v3 integration uses a three-component architecture:
 3. Go to **Apps Code**
 4. Click **+ New App** and paste the code for:
    - `Home Connect Integration v3`
+5. Go to **Apps** → **Add User App** → **Home Connect Integration v3**
+6. On the first page, note the **Redirect URI** shown - you'll need this for Step 2
+
+### Step 2: Create Home Connect Application
+
+1. Log in to the [Home Connect Developer Portal](https://developer.home-connect.com)
+2. Create a new application with these settings:
+   - **Application ID**: `hubitat-homeconnect-integration`
+   - **OAuth Flow**: Authorization Code Grant Flow
+   - **Redirect URI**: Use the URL from Step 1.6 (it will look like `https://cloud.hubitat.com/api/xxx/apps/xxx/oauth/callback`)
+3. Note your **Client ID** and **Client Secret**
+4. **Wait 30 minutes** - Home Connect requires propagation time before you can authenticate
 
 ### Step 3: Configure the Integration
 
-1. Go to **Apps** → **Add User App** → **Home Connect Integration v3**
+1. Return to the Hubitat app configuration (or go to **Apps** → **Home Connect Integration v3**)
 2. Enter your Client ID and Client Secret
 3. Select your region/language
 4. Click **Next** and authenticate with Home Connect
