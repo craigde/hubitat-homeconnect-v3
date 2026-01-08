@@ -36,7 +36,15 @@
  *
  *  Version History:
  *  ----------------
- *  3.0.0  - Initial v3 architecture with parseEvent() pattern
+ *  3.0.0  2026-01-07  Initial v3 architecture with parseEvent() pattern
+ *  3.0.1  2026-01-08  Added PushableButton capability for cycle complete notifications
+ *                     Added jsonState attribute for Node-RED integration
+ *                     Added lastAlert/lastAlertTime for alert tracking
+ *                     Added lastCommandStatus for command feedback
+ *  3.0.2  2026-01-08  Added lastProgram tracking and default program support
+ *                     Made program parameter optional in startProgram/startProgramDelayed
+ *                     Added simple start() command for automation
+ *                     Updated program dropdown with friendly names (Heavy, Normal, etc.)
  */
 
 import groovy.json.JsonSlurper
@@ -60,18 +68,21 @@ metadata {
         
         command "getAvailablePrograms"
         
+        command "start", [], "Start using last program (or Normal if none)"
+        
         command "startProgram", [
-            [name: "Program*", type: "ENUM", constraints: [
-                // Common programs (various brands/regions)
-                "Auto", "Auto1", "Auto2", "Auto3",
-                "Normal", "Heavy", "Delicate", "Express",
+            [name: "Program", type: "ENUM", constraints: [
+                // Common friendly names (US/international)
+                "Heavy", "Auto", "Normal", "Delicate", "Express", 
+                "Rinse", "Machine Care",
+                // European technical names
+                "Auto1", "Auto2", "Auto3",
                 "Eco50", "Quick45", "Quick65",
                 "Intensiv70", "Intensiv45",
-                "Rinse", "PreRinse",
                 "NightWash", "Glas40", "GlassCare",
-                "MachineCare", "Machine Care",
+                "MachineCare", "PreRinse",
                 "-- Or use startProgramByKey --"
-            ]]
+            ], description: "Leave empty to use last program"]
         ]
         
         command "startProgramByKey", [
@@ -80,16 +91,17 @@ metadata {
         
         command "startProgramDelayed", [
             [name: "Delay (minutes)*", type: "NUMBER"],
-            [name: "Program*", type: "ENUM", constraints: [
-                // Common programs (various brands/regions)
-                "Auto", "Auto1", "Auto2", "Auto3",
-                "Normal", "Heavy", "Delicate", "Express",
+            [name: "Program", type: "ENUM", constraints: [
+                // Common friendly names (US/international)
+                "Heavy", "Auto", "Normal", "Delicate", "Express", 
+                "Rinse", "Machine Care",
+                // European technical names
+                "Auto1", "Auto2", "Auto3",
                 "Eco50", "Quick45", "Quick65",
                 "Intensiv70", "Intensiv45",
-                "Rinse", "PreRinse",
                 "NightWash", "Glas40", "GlassCare",
-                "MachineCare", "Machine Care"
-            ]]
+                "MachineCare", "PreRinse"
+            ], description: "Leave empty to use last program"]
         ]
         
         command "stopProgram"
@@ -175,6 +187,7 @@ metadata {
         
         attribute "availableProgramsList", "string"
         attribute "availableOptionsList", "string"
+        attribute "lastProgram", "string"           // Last program used (for defaults)
         attribute "driverVersion", "string"
         attribute "eventStreamStatus", "string"
         attribute "eventPresentState", "string"
@@ -204,7 +217,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.0.0"
+@Field static final String DRIVER_VERSION = "3.0.2"
 
 /* ===========================================================================================================
    LIFECYCLE METHODS
@@ -279,12 +292,27 @@ def getAvailablePrograms() {
 }
 
 /**
- * Starts a program from the dropdown list
- * Automatically converts short names to full Home Connect keys
+ * Starts the last used program (or Normal/Eco50 if none)
+ * Convenience command for simple automation
  */
-def startProgram(String program) {
-    def programKey = buildProgramKey(program)
-    logInfo("Starting program: ${programKey}")
+def start() {
+    def program = getDefaultProgram()
+    logInfo("Starting default program: ${program}")
+    startProgram(program)
+}
+
+/**
+ * Starts a program from the dropdown list
+ * If no program specified, uses last program or default
+ */
+def startProgram(String program = null) {
+    def selectedProgram = program ?: getDefaultProgram()
+    def programKey = buildProgramKey(selectedProgram)
+    
+    // Remember this program for next time
+    saveLastProgram(selectedProgram)
+    
+    logInfo("Starting program: ${selectedProgram} (${programKey})")
     parent?.startProgram(device, programKey)
 }
 
@@ -292,19 +320,28 @@ def startProgram(String program) {
  * Starts a program using the full Home Connect key
  */
 def startProgramByKey(String programKey) {
+    // Extract program name for saving
+    def programName = extractEnum(programKey)
+    saveLastProgram(programName)
+    
     logInfo("Starting program by key: ${programKey}")
     parent?.startProgram(device, programKey)
 }
 
 /**
  * Starts a program after a delay
+ * If no program specified, uses last program or default
  */
-def startProgramDelayed(BigDecimal delayMinutes, String program) {
-    def programKey = buildProgramKey(program)
+def startProgramDelayed(BigDecimal delayMinutes, String program = null) {
+    def selectedProgram = program ?: getDefaultProgram()
+    def programKey = buildProgramKey(selectedProgram)
     Integer minutes = delayMinutes?.toInteger() ?: 0
     Integer delaySeconds = minutes * 60
     
-    logInfo("Starting program '${programKey}' with ${minutes} minute delay")
+    // Remember this program for next time
+    saveLastProgram(selectedProgram)
+    
+    logInfo("Starting program '${selectedProgram}' with ${minutes} minute delay")
     
     def options = [[key: "BSH.Common.Option.StartInRelative", value: delaySeconds, unit: "seconds"]]
     parent?.startProgram(device, programKey, options)
@@ -361,6 +398,46 @@ private String buildProgramKey(String program) {
     
     // Build standard Dishwasher program key
     return "Dishcare.Dishwasher.Program.${program}"
+}
+
+/**
+ * Gets the default program to use when none specified
+ * Returns: last used program, or "Normal", or first available program
+ */
+private String getDefaultProgram() {
+    // First choice: last used program
+    def lastProgram = device.currentValue("lastProgram")
+    if (lastProgram) {
+        logDebug("Using last program: ${lastProgram}")
+        return lastProgram
+    }
+    
+    // Second choice: "Normal" if available
+    if (state.programNames?.contains("Normal")) {
+        logDebug("Using default: Normal")
+        return "Normal"
+    }
+    
+    // Third choice: first available program
+    if (state.programNames?.size() > 0) {
+        def first = state.programNames[0]
+        logDebug("Using first available: ${first}")
+        return first
+    }
+    
+    // Fallback: generic "Normal" and hope for the best
+    logDebug("No programs known, falling back to Normal")
+    return "Normal"
+}
+
+/**
+ * Saves the program as the last used for future defaults
+ */
+private void saveLastProgram(String program) {
+    if (program && program != "-- Or use startProgramByKey --") {
+        sendEvent(name: "lastProgram", value: program)
+        logDebug("Saved last program: ${program}")
+    }
 }
 
 /* ===========================================================================================================
