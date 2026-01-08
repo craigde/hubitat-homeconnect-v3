@@ -42,8 +42,12 @@
  *
  *  Version History:
  *  ----------------
- *  3.0.0  - Initial v3 architecture with Stream Driver pattern
- *  3.0.1  - Added conservative reconnect logic, rate limit detection and auto-recovery
+ *  3.0.0  2026-01-07  Initial v3 architecture with Stream Driver pattern
+ *  3.0.1  2026-01-08  Added conservative reconnect logic (5 min delay for normal disconnects)
+ *                     Added rate limit detection and auto-recovery scheduling
+ *                     Added exponential backoff for failed connections
+ *  3.0.2  2026-01-08  Changed to z_setApiUrl for flexible API URL configuration
+ *                     Supports both production and simulator APIs via parent app
  */
 
 import groovy.json.JsonSlurper
@@ -65,10 +69,12 @@ metadata {
 
         // Internal command (z_ prefix convention)
         command "z_deviceLog", [[name: "level", type: "STRING"], [name: "msg", type: "STRING"]]
+        command "z_setApiUrl", [[name: "url", type: "STRING"]]
 
         // Attributes
         attribute "connectionStatus", "string"   // connected, disconnected, connecting, rate limited, error
         attribute "lastEventTime", "string"      // Timestamp of last received event
+        attribute "apiUrl", "string"             // Current API URL being used
         attribute "driverVersion", "string"
     }
 
@@ -82,14 +88,21 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String API_URL = "https://api.home-connect.com"
+@Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.0.1"
+@Field static final String DRIVER_VERSION = "3.0.2"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
 @Field static final Integer MAX_RECONNECT_ATTEMPTS = 10       // Give up after this many failed attempts
 @Field static final Integer RATE_LIMIT_BUFFER = 300           // 5 minute buffer after rate limit expires
+
+/**
+ * Gets the API URL - can be overridden by parent app via z_setApiUrl
+ */
+private String getApiUrl() {
+    return state.apiUrl ?: DEFAULT_API_URL
+}
 
 /* ===========================================================================================================
    LIFECYCLE METHODS
@@ -163,7 +176,7 @@ def connect() {
     
     try {
         interfaces.eventStream.connect(
-            "${API_URL}${ENDPOINT_APPLIANCES}/events",
+            "${getApiUrl()}${ENDPOINT_APPLIANCES}/events",
             [
                 rawData: true,
                 ignoreSSLIssues: true,
@@ -468,7 +481,7 @@ def apiGet(String path, Closure closure) {
     
     try {
         httpGet(
-            uri: API_URL + path,
+            uri: getApiUrl() + path,
             contentType: "application/json",
             headers: [
                 'Authorization': "Bearer ${token}",
@@ -516,7 +529,7 @@ def apiPut(String path, Map data, Closure closure) {
     
     try {
         httpPut(
-            uri: API_URL + path,
+            uri: getApiUrl() + path,
             contentType: "application/json",
             requestContentType: "application/json",
             body: body,
@@ -564,7 +577,7 @@ def apiDelete(String path, Closure closure) {
     
     try {
         httpDelete(
-            uri: API_URL + path,
+            uri: getApiUrl() + path,
             contentType: "application/json",
             requestContentType: "application/json",
             headers: [
@@ -648,7 +661,7 @@ private void apiGetRetry(String path, Closure closure) {
     
     try {
         httpGet(
-            uri: API_URL + path,
+            uri: getApiUrl() + path,
             contentType: "application/json",
             headers: [
                 'Authorization': "Bearer ${token}",
@@ -680,7 +693,7 @@ private void apiDeleteRetry(String path, Closure closure) {
     
     try {
         httpDelete(
-            uri: API_URL + path,
+            uri: getApiUrl() + path,
             contentType: "application/json",
             requestContentType: "application/json",
             headers: [
@@ -958,6 +971,16 @@ def z_deviceLog(String level, String msg) {
         case "error": logError(msg); break
         default: log.info "Home Connect Stream: ${msg}"
     }
+}
+
+/**
+ * Sets the API URL to use for Home Connect calls
+ * Called by parent app - allows different apps to use different endpoints (production vs simulator)
+ */
+def z_setApiUrl(String url) {
+    state.apiUrl = url
+    sendEvent(name: "apiUrl", value: url)
+    logInfo("API URL set to: ${url}")
 }
 
 private void logDebug(String msg) {
