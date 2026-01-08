@@ -62,11 +62,14 @@ metadata {
         
         command "startProgram", [
             [name: "Program*", type: "ENUM", constraints: [
-                "Auto1", "Auto2", "Auto3",
+                // Common programs (various brands/regions)
+                "Auto", "Auto1", "Auto2", "Auto3",
+                "Normal", "Heavy", "Delicate", "Express",
                 "Eco50", "Quick45", "Quick65",
                 "Intensiv70", "Intensiv45",
+                "Rinse", "PreRinse",
                 "NightWash", "Glas40", "GlassCare",
-                "MachineCare", "PreRinse",
+                "MachineCare", "Machine Care",
                 "-- Or use startProgramByKey --"
             ]]
         ]
@@ -78,11 +81,14 @@ metadata {
         command "startProgramDelayed", [
             [name: "Delay (minutes)*", type: "NUMBER"],
             [name: "Program*", type: "ENUM", constraints: [
-                "Auto1", "Auto2", "Auto3",
+                // Common programs (various brands/regions)
+                "Auto", "Auto1", "Auto2", "Auto3",
+                "Normal", "Heavy", "Delicate", "Express",
                 "Eco50", "Quick45", "Quick65",
                 "Intensiv70", "Intensiv45",
+                "Rinse", "PreRinse",
                 "NightWash", "Glas40", "GlassCare",
-                "MachineCare", "PreRinse"
+                "MachineCare", "Machine Care"
             ]]
         ]
         
@@ -161,6 +167,7 @@ metadata {
         // =====================================================================
         
         attribute "jsonState", "string"             // JSON blob of all state for Node-RED
+        attribute "lastCommandStatus", "string"     // Success/failure of last command
 
         // =====================================================================
         // ATTRIBUTES - Lists & Meta
@@ -394,12 +401,20 @@ def z_parseAvailablePrograms(String json) {
         def name = prog.name ?: extractEnum(key)
         programMap[name] = key
         programNames << name
+        logDebug("Program: ${name} -> ${key}")
     }
     
     state.programMap = programMap
     state.programNames = programNames
     
-    logInfo("Found ${programNames.size()} available programs")
+    logInfo("Found ${programNames.size()} available programs: ${programNames.join(', ')}")
+    logInfo("Use 'startProgramByKey' with these keys if dropdown doesn't match your appliance")
+    
+    // Log the full mapping at debug level
+    programMap.each { name, key ->
+        logDebug("  ${name}: ${key}")
+    }
+    
     sendEvent(name: "availableProgramsList", value: programNames.join(", "))
 }
 
