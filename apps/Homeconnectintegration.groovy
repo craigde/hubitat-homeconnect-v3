@@ -39,10 +39,13 @@
  *
  *  Version History:
  *  ----------------
- *  3.0.0  - Initial v3 architecture
- *         - New child deviceNetworkId prefix "HC3-<haId>"
- *         - Stream Driver handles SSE and API
- *         - Safe to run side-by-side with v1
+ *  3.0.0  2026-01-07  Initial v3 architecture
+ *                     New child deviceNetworkId prefix "HC3-<haId>"
+ *                     Stream Driver handles SSE and API
+ *                     Safe to run side-by-side with v1
+ *  3.0.1  2026-01-08  Added lastCommandStatus feedback to child devices
+ *                     Improved error handling for devices without programs
+ *                     Added delayed device initialization after discovery
  */
 
 import groovy.json.JsonSlurper
@@ -67,7 +70,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.0.0"
+@Field static final String APP_VERSION = "3.0.1"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -257,6 +260,7 @@ private List fetchHomeConnectDevices() {
         ) { response ->
             if (response.data?.data?.homeappliances) {
                 homeConnectDevices = response.data.data.homeappliances
+                logDebug("Found ${homeConnectDevices.size()} appliance(s)")
             }
         }
     } catch (Exception e) {
