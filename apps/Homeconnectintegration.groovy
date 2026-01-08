@@ -323,6 +323,8 @@ def synchronizeDevices() {
     // Don't touch the stream driver
     childrenMap.remove(STREAM_DRIVER_DNI)
 
+    def newDevices = []
+    
     // Create devices for newly selected appliances
     for (homeConnectDeviceId in settings.devices) {
         def hubitatDeviceId = homeConnectIdToDeviceNetworkId(homeConnectDeviceId)
@@ -339,7 +341,7 @@ def synchronizeDevices() {
 
         def device = createApplianceDevice(homeConnectDevice.type, hubitatDeviceId)
         if (device) {
-            device.initialize()
+            newDevices << device
         }
     }
 
@@ -348,6 +350,26 @@ def synchronizeDevices() {
     
     // Start SSE connection
     getStreamDriver()?.connect()
+    
+    // Initialize new devices after a short delay (allows SSE to connect)
+    if (newDevices) {
+        runIn(5, "initializeNewDevices", [data: [deviceIds: newDevices.collect { it.deviceNetworkId }]])
+    }
+}
+
+/**
+ * Initializes newly created devices - fetches status and available programs
+ */
+def initializeNewDevices(Map data) {
+    logInfo("Initializing ${data.deviceIds.size()} new device(s)")
+    
+    data.deviceIds.each { dni ->
+        def device = getChildDevice(dni)
+        if (device) {
+            logDebug("Initializing ${device.displayName}")
+            device.initialize()
+        }
+    }
 }
 
 /**
@@ -533,8 +555,15 @@ def startProgram(device, String programKey, def options = "") {
     def streamDriver = getStreamDriver()
     
     logInfo("Starting program ${programKey} on ${haId}")
-    streamDriver?.setActiveProgram(haId, programKey, options) { response ->
-        logDebug("startProgram response: ${response}")
+    
+    try {
+        streamDriver?.setActiveProgram(haId, programKey, options) { response ->
+            logDebug("startProgram response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Program started: ${programKey}")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to start program: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
 }
 
@@ -546,8 +575,15 @@ def stopProgram(device) {
     def streamDriver = getStreamDriver()
     
     logInfo("Stopping program on ${haId}")
-    streamDriver?.stopActiveProgram(haId) { response ->
-        logDebug("stopProgram response: ${response}")
+    
+    try {
+        streamDriver?.stopActiveProgram(haId) { response ->
+            logDebug("stopProgram response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Program stopped")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to stop program: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
 }
 
@@ -560,25 +596,43 @@ def setPowerState(device, boolean state) {
     def value = state ? "BSH.Common.EnumType.PowerState.On" : "BSH.Common.EnumType.PowerState.Off"
     
     logInfo("Setting power ${state ? 'ON' : 'OFF'} for ${haId}")
-    streamDriver?.setSetting(haId, "BSH.Common.Setting.PowerState", value) { response ->
-        logDebug("setPowerState response: ${response}")
+    
+    try {
+        streamDriver?.setSetting(haId, "BSH.Common.Setting.PowerState", value) { response ->
+            logDebug("setPowerState response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Power ${state ? 'on' : 'off'}")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to set power state: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
 }
 
 /**
  * Gets list of available programs for a device
+ * Some devices (Hob, FridgeFreezer) don't support programs - this handles that gracefully
  */
 def getAvailableProgramList(device) {
     def haId = getHaIdFromDevice(device)
     def streamDriver = getStreamDriver()
     
     logDebug("Fetching available programs for ${haId}")
-    streamDriver?.getAvailablePrograms(haId) { programs ->
-        try {
-            device.z_parseAvailablePrograms(JsonOutput.toJson(programs))
-        } catch (Exception e) {
-            // Method may not exist
+    
+    try {
+        streamDriver?.getAvailablePrograms(haId) { programs ->
+            if (programs) {
+                try {
+                    device.z_parseAvailablePrograms(JsonOutput.toJson(programs))
+                } catch (Exception e) {
+                    logDebug("Device doesn't support z_parseAvailablePrograms: ${e.message}")
+                }
+            } else {
+                logDebug("No programs available for ${haId} (device may not support programs)")
+            }
         }
+    } catch (Exception e) {
+        // Device doesn't support programs - this is expected for some appliance types
+        logDebug("Cannot fetch programs for ${haId}: ${e.message}")
     }
 }
 
