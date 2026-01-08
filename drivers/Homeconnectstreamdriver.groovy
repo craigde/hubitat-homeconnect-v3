@@ -48,6 +48,8 @@
  *                     Added exponential backoff for failed connections
  *  3.0.2  2026-01-08  Changed to z_setApiUrl for flexible API URL configuration
  *                     Supports both production and simulator APIs via parent app
+ *  3.0.3  2026-01-08  Added lastEventReceived timestamp for stream health monitoring
+ *                     Added rateLimitRemaining/rateLimitLimit attributes from API headers
  */
 
 import groovy.json.JsonSlurper
@@ -73,7 +75,10 @@ metadata {
 
         // Attributes
         attribute "connectionStatus", "string"   // connected, disconnected, connecting, rate limited, error
-        attribute "lastEventTime", "string"      // Timestamp of last received event
+        attribute "lastEventTime", "string"      // Timestamp of last received event (legacy - formatted)
+        attribute "lastEventReceived", "string"  // ISO timestamp of last SSE event for health monitoring
+        attribute "rateLimitRemaining", "number" // Remaining API calls (from response headers)
+        attribute "rateLimitLimit", "number"     // Total API call limit (from response headers)
         attribute "apiUrl", "string"             // Current API URL being used
         attribute "driverVersion", "string"
     }
@@ -90,7 +95,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.0.2"
+@Field static final String DRIVER_VERSION = "3.0.3"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -188,6 +193,7 @@ def connect() {
             ]
         )
         sendEvent(name: "connectionStatus", value: "connecting")
+        
     } catch (Exception e) {
         logError("Failed to connect: ${e.message}")
         sendEvent(name: "connectionStatus", value: "error")
@@ -319,6 +325,9 @@ def parse(String text) {
     
     logDebug("Raw SSE data: ${text?.take(200)}${text?.length() > 200 ? '...' : ''}")
     
+    // Update lastEventReceived timestamp on any incoming data
+    updateLastEventReceived()
+    
     // Check for rate limit error in the stream
     if (text.contains('"key": "429"') || text.contains('"key":"429"') || text.contains("rate limit")) {
         handleRateLimitError(text)
@@ -346,6 +355,19 @@ def parse(String text) {
 }
 
 /**
+ * Updates the lastEventReceived timestamp
+ * Called only when actual SSE data arrives to track stream health
+ * NOT called on connection attempts or API calls
+ */
+private void updateLastEventReceived() {
+    def now = new Date()
+    // ISO 8601 format for programmatic use
+    sendEvent(name: "lastEventReceived", value: now.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
+    // Human-readable format (legacy attribute)
+    sendEvent(name: "lastEventTime", value: now.format("yyyy-MM-dd HH:mm:ss"))
+}
+
+/**
  * Handles rate limit (429) errors from the SSE stream
  * Extracts the retry time and schedules automatic reconnection
  */
@@ -364,6 +386,7 @@ private void handleRateLimitError(String text) {
     state.rateLimitedUntilFormatted = rateLimitTime
     
     sendEvent(name: "connectionStatus", value: "rate limited until ${rateLimitTime}")
+    sendEvent(name: "rateLimitRemaining", value: 0)
     logError("Rate limited until ${rateLimitTime}")
     
     // Schedule automatic reconnect when rate limit expires (plus buffer)
@@ -412,8 +435,6 @@ private void processEventPayload(String payload, String eventType = null) {
     
     try {
         def json = new JsonSlurper().parseText(payload)
-        
-        sendEvent(name: "lastEventTime", value: new Date().format("yyyy-MM-dd HH:mm:ss"))
         
         String haId = json.haId
         if (!haId) {
@@ -490,6 +511,10 @@ def apiGet(String path, Closure closure) {
             ]
         ) { response ->
             logDebug("API GET response status: ${response.status}")
+            
+            // Extract rate limit headers
+            extractRateLimitHeaders(response)
+            
             if (response.data) {
                 closure(response.data)
             }
@@ -540,6 +565,10 @@ def apiPut(String path, Map data, Closure closure) {
             ]
         ) { response ->
             logDebug("API PUT response status: ${response.status}")
+            
+            // Extract rate limit headers
+            extractRateLimitHeaders(response)
+            
             if (response.data) {
                 closure(response.data)
             }
@@ -587,6 +616,10 @@ def apiDelete(String path, Closure closure) {
             ]
         ) { response ->
             logDebug("API DELETE response status: ${response.status}")
+            
+            // Extract rate limit headers
+            extractRateLimitHeaders(response)
+            
             if (response.data) {
                 closure(response.data)
             }
@@ -599,12 +632,56 @@ def apiDelete(String path, Closure closure) {
 }
 
 /**
+ * Extracts rate limit information from API response headers
+ * Updates rateLimitRemaining and rateLimitLimit attributes
+ *
+ * Home Connect returns these headers on API responses:
+ * - X-RateLimit-Limit: Total allowed calls (typically 1000)
+ * - X-RateLimit-Remaining: Calls remaining in the current period
+ */
+private void extractRateLimitHeaders(response) {
+    try {
+        def headers = response.getHeaders()
+        
+        // Try different header name formats (Home Connect uses X-RateLimit-*)
+        def remaining = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Remaining') }?.value
+        def limit = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Limit') }?.value
+        
+        if (remaining != null) {
+            def remainingInt = remaining.toString().toInteger()
+            sendEvent(name: "rateLimitRemaining", value: remainingInt)
+            logDebug("Rate limit remaining: ${remainingInt}")
+            
+            // Warn if getting low
+            if (remainingInt < 100) {
+                logWarn("Rate limit warning: only ${remainingInt} API calls remaining")
+            }
+        }
+        
+        if (limit != null) {
+            def limitInt = limit.toString().toInteger()
+            sendEvent(name: "rateLimitLimit", value: limitInt)
+            logDebug("Rate limit total: ${limitInt}")
+        }
+    } catch (Exception e) {
+        logDebug("Could not extract rate limit headers: ${e.message}")
+    }
+}
+
+/**
  * Handles HTTP errors from API calls
  * Implements retry logic for 401 (token expired) errors
  */
 private void handleHttpError(String method, String path, groovyx.net.http.HttpResponseException e, Closure closure) {
     def statusCode = e.getStatusCode()
     def responseData = e.getResponse()?.getData()
+    
+    // Try to extract rate limit headers even from error responses
+    try {
+        extractRateLimitHeaders(e.getResponse())
+    } catch (Exception ex) {
+        // Ignore - not all error responses have headers accessible
+    }
     
     switch (statusCode) {
         case 401:
@@ -635,6 +712,7 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
             
         case 429:
             logError("API ${method} 429 Rate Limited")
+            sendEvent(name: "rateLimitRemaining", value: 0)
             state.rateLimitedUntil = now() + 60000  // Back off for 1 minute
             break
             
@@ -670,6 +748,7 @@ private void apiGetRetry(String path, Closure closure) {
             ]
         ) { response ->
             logDebug("API GET retry response: ${response.status}")
+            extractRateLimitHeaders(response)
             if (response.data) {
                 closure(response.data)
             }
@@ -703,6 +782,7 @@ private void apiDeleteRetry(String path, Closure closure) {
             ]
         ) { response ->
             logDebug("API DELETE retry response: ${response.status}")
+            extractRateLimitHeaders(response)
             if (response.data) {
                 closure(response.data)
             }
