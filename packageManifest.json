@@ -1,0 +1,38 @@
+{
+  "packageName": "Home Connect Integration v3",
+  "author": "Craig Dewar",
+  "version": "3.0.3",
+  "minimumHEVersion": "2.3.0",
+  "dateReleased": "2026-01-09",
+  "licenseFile": "",
+  "releaseNotes": "v3.0.3 - Stream health monitoring with lastEventReceived attribute, fixed command definitions for Hubitat compatibility",
+  "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
+  "communityLink": "",
+  "apps": [
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-app",
+      "name": "Home Connect Integration v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/apps/HomeConnectIntegration_v3.groovy",
+      "required": true,
+      "oauth": true,
+      "primary": true
+    }
+  ],
+  "drivers": [
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-stream",
+      "name": "Home Connect Stream Driver v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectStreamDriver.groovy",
+      "required": true
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-dishwasher",
+      "name": "Home Connect Dishwasher v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectDishwasher.groovy",
+      "required": false
+    }
+  ]
+}
