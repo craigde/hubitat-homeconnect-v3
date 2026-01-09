@@ -45,6 +45,7 @@
  *                     Made program parameter optional in startProgram/startProgramDelayed
  *                     Added simple start() command for automation
  *                     Updated program dropdown with friendly names (Heavy, Normal, etc.)
+ *  3.0.3  2026-01-09  Fixed start command definition for Hubitat compatibility
  */
 
 import groovy.json.JsonSlurper
@@ -68,7 +69,7 @@ metadata {
         
         command "getAvailablePrograms"
         
-        command "start", [], "Start using last program (or Normal if none)"
+        command "start"
         
         command "startProgram", [
             [name: "Program", type: "ENUM", constraints: [
@@ -217,7 +218,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.0.2"
+@Field static final String DRIVER_VERSION = "3.0.3"
 
 /* ===========================================================================================================
    LIFECYCLE METHODS
