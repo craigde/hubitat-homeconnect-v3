@@ -13,7 +13,7 @@
       "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-app",
       "name": "Home Connect Integration v3",
       "namespace": "craigde",
-      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/apps/HomeConnectIntegration_v3.groovy",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/apps/HomeConnectIntegration.groovy",      
       "required": true,
       "oauth": true,
       "primary": true
