@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "minimumHEVersion": "2.3.0",
   "dateReleased": "2026-01-09",
   "licenseFile": "",
-  "releaseNotes": "v3.0.3 - Stream health monitoring with lastEventReceived attribute, fixed command definitions for Hubitat compatibility",
+  "releaseNotes": "v3.0.4 - Fixed OAuth redirect URI timing issue, added comprehensive OAuth debugging, fixed dishwasher start command",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "",
   "apps": [
