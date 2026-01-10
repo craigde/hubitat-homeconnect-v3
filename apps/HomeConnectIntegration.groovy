@@ -48,7 +48,8 @@
  *                     Added delayed device initialization after discovery
  *  3.0.2  2026-01-09  Fixed OAuth redirect URI - ensure access token created before OAuth URL
  *                     Added detailed OAuth debug logging
- *  3.0.3  2026-01-09  Fixed typo that was blocking install
+ *  3.0.3  2026-01-09  Fixed syntax error (extra closing brace)
+ *  3.0.4  2026-01-09  Removed access_token from redirect URI - must match Home Connect registration exactly
  */
 
 import groovy.json.JsonSlurper
@@ -74,7 +75,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.0.2"
+@Field static final String APP_VERSION = "3.0.4"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -857,11 +858,10 @@ private boolean validateSecureState(String stateValue) {
 /**
  * Gets the OAuth redirect URL for callbacks
  * This must match EXACTLY what's registered in the Home Connect Developer Portal
+ * Note: Do NOT include access_token - Hubitat handles that internally
  */
 private String getOAuthRedirectUrl() {
-    // Ensure access token exists
-    ensureAccessToken()
-    return "${getFullApiServerUrl()}/oauth/callback?access_token=${state.accessToken}"
+    return "${getFullApiServerUrl()}/oauth/callback"
 }
 
 /**
