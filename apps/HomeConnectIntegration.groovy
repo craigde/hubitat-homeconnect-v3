@@ -48,6 +48,7 @@
  *                     Added delayed device initialization after discovery
  *  3.0.2  2026-01-09  Fixed OAuth redirect URI - ensure access token created before OAuth URL
  *                     Added detailed OAuth debug logging
+ *  3.0.3  2026-01-09  Fixed typo that was blocking install
  */
 
 import groovy.json.JsonSlurper
