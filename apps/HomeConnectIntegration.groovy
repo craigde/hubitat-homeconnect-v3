@@ -50,6 +50,8 @@
  *                     Added detailed OAuth debug logging
  *  3.0.3  2026-01-09  Fixed syntax error (extra closing brace)
  *  3.0.4  2026-01-09  Removed access_token from redirect URI - must match Home Connect registration exactly
+ *  3.0.5  2026-01-09  Fixed: access_token needed in actual OAuth flow but not in displayed registration URL
+ *                     Added separate getOAuthRedirectUrlForRegistration() for display purposes
  */
 
 import groovy.json.JsonSlurper
@@ -75,7 +77,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.0.4"
+@Field static final String APP_VERSION = "3.0.5"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -156,7 +158,8 @@ def pageIntro() {
         atomicState.countryCode = countriesList.find { it.key == region }?.value
     }
     
-    def redirectUri = getOAuthRedirectUrl()
+    // Show clean URL (without access_token) for Home Connect registration
+    def redirectUri = getOAuthRedirectUrlForRegistration()
 
     return dynamicPage(
         name: 'pageIntro',
@@ -235,7 +238,7 @@ def pageAuthentication() {
         section("Troubleshooting") {
             paragraph """<small>
 <b>Redirect URI for Home Connect Developer Portal:</b><br/>
-<code>${getOAuthRedirectUrl()}</code>
+<code>${getOAuthRedirectUrlForRegistration()}</code>
 
 If authentication fails, verify this URI matches exactly in your Home Connect application settings.
 </small>"""
@@ -856,11 +859,20 @@ private boolean validateSecureState(String stateValue) {
 }
 
 /**
- * Gets the OAuth redirect URL for callbacks
- * This must match EXACTLY what's registered in the Home Connect Developer Portal
- * Note: Do NOT include access_token - Hubitat handles that internally
+ * Gets the OAuth redirect URL for callbacks (includes access_token for Hubitat auth)
+ * This is what we send to Home Connect in the OAuth request
  */
 private String getOAuthRedirectUrl() {
+    ensureAccessToken()
+    return "${getFullApiServerUrl()}/oauth/callback?access_token=${state.accessToken}"
+}
+
+/**
+ * Gets the base redirect URL for display/registration purposes
+ * Users should register THIS URL in Home Connect Developer Portal
+ * Home Connect only validates the base path, not query parameters
+ */
+private String getOAuthRedirectUrlForRegistration() {
     return "${getFullApiServerUrl()}/oauth/callback"
 }
 
