@@ -943,7 +943,6 @@ private boolean acquireOAuthToken(String code) {
         'redirect_uri': redirectUri
     ])
 }
-}
 
 /**
  * Refreshes the OAuth access token
