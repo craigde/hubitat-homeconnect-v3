@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.0.6",
+  "version": "3.0.7",
   "minimumHEVersion": "2.3.0",
   "dateReleased": "2026-01-09",
   "licenseFile": "",
-  "releaseNotes": "v3.0.6 - Minor fixes to the oauth flow",
+  "releaseNotes": "v3.0.7 - Minor fixes to the oauth flow",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "",
   "apps": [
