@@ -48,10 +48,9 @@
  *                     Added delayed device initialization after discovery
  *  3.0.2  2026-01-09  Fixed OAuth redirect URI - ensure access token created before OAuth URL
  *                     Added detailed OAuth debug logging
- *  3.0.3  2026-01-09  Fixed syntax error (extra closing brace)
- *  3.0.4  2026-01-09  Removed access_token from redirect URI - must match Home Connect registration exactly
- *  3.0.5  2026-01-09  Fixed: access_token needed in actual OAuth flow but not in displayed registration URL
- *                     Added separate getOAuthRedirectUrlForRegistration() for display purposes
+ *  3.0.3  2026-01-09  Fixed typo that was blocking install
+ *  3.0.4  2026-01-09  Display clean redirect URI (without access_token) for Home Connect registration
+ *  3.0.5  2026-01-09  Auto-refresh authentication page while waiting for OAuth callback
  */
 
 import groovy.json.JsonSlurper
@@ -158,8 +157,8 @@ def pageIntro() {
         atomicState.countryCode = countriesList.find { it.key == region }?.value
     }
     
-    // Show clean URL (without access_token) for Home Connect registration
-    def redirectUri = getOAuthRedirectUrlForRegistration()
+    // Display clean URL (without access_token) for Home Connect registration
+    def redirectUri = getOAuthRedirectUrlForDisplay()
 
     return dynamicPage(
         name: 'pageIntro',
@@ -213,6 +212,10 @@ def pageAuthentication() {
     
     def oauthUrl = generateOAuthUrl()
     logDebug("OAuth URL: ${oauthUrl}")
+    
+    // Auto-refresh page every 5 seconds while waiting for OAuth callback
+    // Once connected, stop refreshing
+    def refreshSeconds = atomicState.oAuthAuthToken ? 0 : 5
 
     return dynamicPage(
         name: 'pageAuthentication',
@@ -220,7 +223,7 @@ def pageAuthentication() {
         nextPage: 'pageDevices',
         install: false,
         uninstall: false,
-        refreshInterval: 0
+        refreshInterval: refreshSeconds
     ) {
         section() {
             if (atomicState.oAuthAuthToken) {
@@ -231,6 +234,7 @@ def pageAuthentication() {
             } else {
                 showHideNextButton(false)
                 paragraph 'Click the button below to connect your Home Connect account.'
+                paragraph '<small><i>This page will automatically refresh once connected.</i></small>'
                 href url: oauthUrl, style: 'external', required: false,
                      title: "Connect to Home Connect", description: "Tap to authenticate"
             }
@@ -238,7 +242,7 @@ def pageAuthentication() {
         section("Troubleshooting") {
             paragraph """<small>
 <b>Redirect URI for Home Connect Developer Portal:</b><br/>
-<code>${getOAuthRedirectUrlForRegistration()}</code>
+<code>${getOAuthRedirectUrlForDisplay()}</code>
 
 If authentication fails, verify this URI matches exactly in your Home Connect application settings.
 </small>"""
@@ -859,8 +863,8 @@ private boolean validateSecureState(String stateValue) {
 }
 
 /**
- * Gets the OAuth redirect URL for callbacks (includes access_token for Hubitat auth)
- * This is what we send to Home Connect in the OAuth request
+ * Gets the OAuth redirect URL for callbacks (used in actual OAuth flow)
+ * Includes access_token for Hubitat callback authentication
  */
 private String getOAuthRedirectUrl() {
     ensureAccessToken()
@@ -868,11 +872,10 @@ private String getOAuthRedirectUrl() {
 }
 
 /**
- * Gets the base redirect URL for display/registration purposes
- * Users should register THIS URL in Home Connect Developer Portal
- * Home Connect only validates the base path, not query parameters
+ * Gets the OAuth redirect URL for display purposes (without access_token)
+ * This is what users should register in the Home Connect Developer Portal
  */
-private String getOAuthRedirectUrlForRegistration() {
+private String getOAuthRedirectUrlForDisplay() {
     return "${getFullApiServerUrl()}/oauth/callback"
 }
 
