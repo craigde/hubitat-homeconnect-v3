@@ -46,11 +46,7 @@
  *  3.0.1  2026-01-08  Added lastCommandStatus feedback to child devices
  *                     Improved error handling for devices without programs
  *                     Added delayed device initialization after discovery
- *  3.0.2  2026-01-09  Fixed OAuth redirect URI - ensure access token created before OAuth URL
- *                     Added detailed OAuth debug logging
- *  3.0.3  2026-01-09  Fixed typo that was blocking install
- *  3.0.4  2026-01-09  Display clean redirect URI (without access_token) for Home Connect registration
- *  3.0.5  2026-01-09  Auto-refresh authentication page while waiting for OAuth callback
+ *  3.0.6  2026-01-11  Fixed device creation on first install (foundDevices timing issue)
  */
 
 import groovy.json.JsonSlurper
@@ -65,8 +61,7 @@ definition(
     category: 'My Apps',
     iconUrl: '',
     iconX2Url: '',
-    iconX3Url: '',
-    oauth: true
+    iconX3Url: ''
 )
 
 /* ===========================================================================================================
@@ -76,7 +71,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.0.5"
+@Field static final String APP_VERSION = "3.0.6"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -96,7 +91,6 @@ private getClientSecret() { settings.clientSecret }
 
 def installed() {
     logInfo("Installing Home Connect Integration v3")
-    ensureAccessToken()
     createStreamDriver()
 }
 
@@ -108,24 +102,6 @@ def uninstalled() {
 def updated() {
     logInfo("Updating Home Connect Integration v3")
     synchronizeDevices()
-}
-
-/**
- * Ensures Hubitat access token exists for OAuth callbacks
- * Must be called early to ensure redirect URI is consistent
- */
-private void ensureAccessToken() {
-    if (!state.accessToken) {
-        try {
-            state.accessToken = createAccessToken()
-            log.info "${app.name}: Created new Hubitat access token"
-        } catch (Exception e) {
-            log.error "${app.name}: Failed to create access token: ${e.message}"
-            log.error "${app.name}: Make sure OAuth is enabled for this app"
-        }
-    } else {
-        log.debug "${app.name}: Hubitat access token already exists"
-    }
 }
 
 /* ===========================================================================================================
@@ -143,9 +119,6 @@ preferences {
  */
 def pageIntro() {
     logDebug("Showing Introduction Page")
-    
-    // Ensure access token exists before showing redirect URI
-    ensureAccessToken()
 
     def streamDriver = getStreamDriver()
     def languages = streamDriver?.getSupportedLanguages() ?: getDefaultLanguages()
@@ -156,9 +129,6 @@ def pageIntro() {
         atomicState.langCode = region
         atomicState.countryCode = countriesList.find { it.key == region }?.value
     }
-    
-    // Display clean URL (without access_token) for Home Connect registration
-    def redirectUri = getOAuthRedirectUrlForDisplay()
 
     return dynamicPage(
         name: 'pageIntro',
@@ -178,7 +148,7 @@ This application connects your Home Connect smart appliances to Hubitat.
 2. Create a new application with these settings:
    • <b>Application ID:</b> hubitat-homeconnect-integration
    • <b>OAuth Flow:</b> Authorization Code Grant Flow
-   • <b>Redirect URI:</b> <code>${redirectUri}</code>
+   • <b>Redirect URI:</b> ${getFullApiServerUrl()}/oauth/callback
 
 3. Copy your Client ID and Client Secret below
 
@@ -207,15 +177,10 @@ This application connects your Home Connect smart appliances to Hubitat.
 def pageAuthentication() {
     logDebug("Showing Authentication Page")
 
-    // Ensure access token exists
-    ensureAccessToken()
-    
-    def oauthUrl = generateOAuthUrl()
-    logDebug("OAuth URL: ${oauthUrl}")
-    
-    // Auto-refresh page every 5 seconds while waiting for OAuth callback
-    // Once connected, stop refreshing
-    def refreshSeconds = atomicState.oAuthAuthToken ? 0 : 5
+    // Create Hubitat access token if not exists
+    if (!atomicState.accessToken) {
+        atomicState.accessToken = createAccessToken()
+    }
 
     return dynamicPage(
         name: 'pageAuthentication',
@@ -223,29 +188,20 @@ def pageAuthentication() {
         nextPage: 'pageDevices',
         install: false,
         uninstall: false,
-        refreshInterval: refreshSeconds
+        refreshInterval: 0
     ) {
         section() {
             if (atomicState.oAuthAuthToken) {
                 showHideNextButton(true)
                 paragraph '<b>✓ Connected!</b> Your Home Connect account is linked. Press Next to continue.'
-                href url: oauthUrl, style: 'external', required: false,
+                href url: generateOAuthUrl(), style: 'external', required: false,
                      title: "Re-authenticate", description: "Tap to reconnect if needed"
             } else {
                 showHideNextButton(false)
                 paragraph 'Click the button below to connect your Home Connect account.'
-                paragraph '<small><i>This page will automatically refresh once connected.</i></small>'
-                href url: oauthUrl, style: 'external', required: false,
+                href url: generateOAuthUrl(), style: 'external', required: false,
                      title: "Connect to Home Connect", description: "Tap to authenticate"
             }
-        }
-        section("Troubleshooting") {
-            paragraph """<small>
-<b>Redirect URI for Home Connect Developer Portal:</b><br/>
-<code>${getOAuthRedirectUrlForDisplay()}</code>
-
-If authentication fails, verify this URI matches exactly in your Home Connect application settings.
-</small>"""
         }
     }
 }
@@ -366,6 +322,17 @@ def synchronizeDevices() {
     // Ensure stream driver exists
     createStreamDriver()
     
+    // If foundDevices is empty, we may need to fetch them again
+    // This can happen on first install due to timing
+    if (!state.foundDevices || state.foundDevices.isEmpty()) {
+        logDebug("foundDevices is empty - fetching appliance list")
+        def homeConnectDevices = fetchHomeConnectDevices()
+        state.foundDevices = homeConnectDevices.collect { appliance ->
+            [haId: appliance.haId, name: appliance.name, type: appliance.type]
+        }
+        logDebug("Populated foundDevices with ${state.foundDevices.size()} appliance(s)")
+    }
+    
     def childDevices = getChildDevices()
     def childrenMap = childDevices.collectEntries { [(it.deviceNetworkId): it] }
     
@@ -386,7 +353,10 @@ def synchronizeDevices() {
 
         // Create new device
         def homeConnectDevice = state.foundDevices.find { it.haId == homeConnectDeviceId }
-        if (!homeConnectDevice) continue
+        if (!homeConnectDevice) {
+            logWarn("Could not find device info for ${homeConnectDeviceId} - skipping")
+            continue
+        }
 
         def device = createApplianceDevice(homeConnectDevice.type, hubitatDeviceId)
         if (device) {
@@ -775,43 +745,19 @@ mappings {
  * Generates the OAuth authorization URL
  */
 private String generateOAuthUrl() {
-    // Ensure we have an access token first
-    ensureAccessToken()
-    
     def timestamp = now().toString()
     def stateValue = generateSecureState(timestamp)
-    def redirectUri = getOAuthRedirectUrl()
-    def clientId = getClientId()
 
-    // Debug logging for OAuth parameters
-    log.debug "${app.name}: ===== OAuth URL Generation ====="
-    log.debug "${app.name}: Client ID: ${clientId ? clientId.take(8) + '...' : 'NULL/EMPTY'}"
-    log.debug "${app.name}: Client ID length: ${clientId?.length() ?: 0}"
-    log.debug "${app.name}: Redirect URI: ${redirectUri}"
-    log.debug "${app.name}: State: ${stateValue?.take(20)}..."
-    log.debug "${app.name}: Hubitat access token exists: ${state.accessToken ? 'YES' : 'NO'}"
-
-    if (!clientId) {
-        log.error "${app.name}: CLIENT ID IS EMPTY - OAuth will fail!"
-    }
-
-    def params = [
-        'client_id': clientId,
-        'redirect_uri': redirectUri,
+    def streamDriver = getStreamDriver()
+    def queryString = streamDriver?.toQueryString([
+        'client_id': getClientId(),
+        'redirect_uri': getOAuthRedirectUrl(),
         'response_type': 'code',
         'scope': 'IdentifyAppliance Monitor Settings Control',
         'state': stateValue
-    ]
+    ]) ?: ""
     
-    def queryString = params.collect { k, v -> 
-        "${URLEncoder.encode(k, 'UTF-8')}=${URLEncoder.encode(v?.toString() ?: '', 'UTF-8')}" 
-    }.join('&')
-    
-    def url = "${OAUTH_AUTHORIZATION_URL}?${queryString}"
-    log.debug "${app.name}: Full OAuth URL length: ${url.length()}"
-    log.debug "${app.name}: ===== End OAuth URL Generation ====="
-    
-    return url
+    return "${OAUTH_AUTHORIZATION_URL}?${queryString}"
 }
 
 /**
@@ -863,61 +809,30 @@ private boolean validateSecureState(String stateValue) {
 }
 
 /**
- * Gets the OAuth redirect URL for callbacks (used in actual OAuth flow)
- * Includes access_token for Hubitat callback authentication
+ * Gets the OAuth redirect URL for callbacks
  */
 private String getOAuthRedirectUrl() {
-    ensureAccessToken()
-    return "${getFullApiServerUrl()}/oauth/callback?access_token=${state.accessToken}"
-}
-
-/**
- * Gets the OAuth redirect URL for display purposes (without access_token)
- * This is what users should register in the Home Connect Developer Portal
- */
-private String getOAuthRedirectUrlForDisplay() {
-    return "${getFullApiServerUrl()}/oauth/callback"
+    return "${getFullApiServerUrl()}/oauth/callback?access_token=${atomicState.accessToken}"
 }
 
 /**
  * Handles the OAuth callback from Home Connect
  */
 def oAuthCallback() {
-    // Always log callback details regardless of log level
-    log.info "${app.name}: ===== OAuth Callback Received ====="
-    log.info "${app.name}: Full params: ${params}"
-    log.info "${app.name}: Code present: ${params.code ? 'YES (' + params.code.take(10) + '...)' : 'NO'}"
-    log.info "${app.name}: State present: ${params.state ? 'YES' : 'NO'}"
-    log.info "${app.name}: Error: ${params.error ?: 'none'}"
-    log.info "${app.name}: Error description: ${params.error_description ?: 'none'}"
+    logDebug("Received OAuth callback")
 
     def code = params.code
     def oAuthState = params.state
-    def error = params.error
-    def errorDesc = params.error_description
-
-    // Check for error response from Home Connect
-    if (error) {
-        log.error "${app.name}: OAuth error from Home Connect: ${error} - ${errorDesc}"
-        return renderOAuthFailure("Home Connect error: ${errorDesc ?: error}")
-    }
 
     if (!code) {
-        log.error "${app.name}: No authorization code in OAuth callback"
-        return renderOAuthFailure("No authorization code received")
+        logError("No authorization code in OAuth callback")
+        return renderOAuthFailure()
     }
 
-    if (!oAuthState) {
-        log.error "${app.name}: No state parameter in OAuth callback"
-        return renderOAuthFailure("Missing state parameter")
+    if (!oAuthState || !validateSecureState(oAuthState)) {
+        logError("Invalid OAuth state in callback")
+        return renderOAuthFailure()
     }
-    
-    log.debug "${app.name}: Validating state..."
-    if (!validateSecureState(oAuthState)) {
-        log.error "${app.name}: Invalid OAuth state in callback"
-        return renderOAuthFailure("Invalid state - please try again")
-    }
-    log.debug "${app.name}: State validated successfully"
 
     // Clear any existing tokens
     atomicState.oAuthRefreshToken = null
@@ -925,38 +840,28 @@ def oAuthCallback() {
     atomicState.oAuthTokenExpires = null
 
     // Exchange code for tokens
-    log.info "${app.name}: Exchanging authorization code for tokens..."
-    def success = acquireOAuthToken(code)
+    acquireOAuthToken(code)
 
-    if (!success || !atomicState.oAuthAuthToken) {
-        log.error "${app.name}: Failed to acquire OAuth token"
-        return renderOAuthFailure("Failed to get access token")
+    if (!atomicState.oAuthAuthToken) {
+        logError("Failed to acquire OAuth token")
+        return renderOAuthFailure()
     }
 
-    log.info "${app.name}: ===== OAuth Authentication Successful ====="
+    logInfo("OAuth authentication successful")
     return renderOAuthSuccess()
 }
 
 /**
  * Exchanges authorization code for access token
  */
-private boolean acquireOAuthToken(String code) {
-    def redirectUri = getOAuthRedirectUrl()
-    def clientId = getClientId()
-    def clientSecret = getClientSecret()
-    
-    log.debug "${app.name}: ===== Token Acquisition ====="
-    log.debug "${app.name}: Redirect URI for token request: ${redirectUri}"
-    log.debug "${app.name}: Client ID: ${clientId ? clientId.take(8) + '...' : 'NULL'}"
-    log.debug "${app.name}: Client Secret: ${clientSecret ? 'SET (' + clientSecret.length() + ' chars)' : 'NULL/EMPTY'}"
-    log.debug "${app.name}: Code: ${code?.take(10)}..."
-    
-    return apiRequestAccessToken([
+private void acquireOAuthToken(String code) {
+    logDebug("Acquiring OAuth token")
+    apiRequestAccessToken([
         'grant_type': 'authorization_code',
         'code': code,
-        'client_id': clientId,
-        'client_secret': clientSecret,
-        'redirect_uri': redirectUri
+        'client_id': getClientId(),
+        'client_secret': getClientSecret(),
+        'redirect_uri': getOAuthRedirectUrl()
     ])
 }
 
@@ -975,37 +880,20 @@ private void refreshOAuthToken() {
 /**
  * Makes the OAuth token request
  */
-private boolean apiRequestAccessToken(Map body) {
+private void apiRequestAccessToken(Map body) {
     try {
-        log.debug "${app.name}: Making token request to: ${OAUTH_TOKEN_URL}"
-        log.debug "${app.name}: Request body keys: ${body.keySet()}"
-        
         httpPost(uri: OAUTH_TOKEN_URL, requestContentType: 'application/x-www-form-urlencoded', body: body) { response ->
-            log.debug "${app.name}: Token response status: ${response.status}"
-            log.debug "${app.name}: Token response success: ${response.success}"
-            
             if (response?.data && response.success) {
                 atomicState.oAuthRefreshToken = response.data.refresh_token
                 atomicState.oAuthAuthToken = response.data.access_token
                 atomicState.oAuthTokenExpires = now() + (response.data.expires_in * 1000)
-                log.info "${app.name}: OAuth token acquired successfully!"
-                log.debug "${app.name}: Token expires in ${response.data.expires_in}s"
-                log.debug "${app.name}: Access token: ${response.data.access_token?.take(20)}..."
-                return true
+                logDebug("OAuth token acquired, expires in ${response.data.expires_in}s")
             } else {
-                log.error "${app.name}: Token response unsuccessful"
-                log.error "${app.name}: Response data: ${response.data}"
-                return false
+                logError("Failed to acquire OAuth token - response unsuccessful")
             }
         }
-        return atomicState.oAuthAuthToken != null
-    } catch (groovyx.net.http.HttpResponseException e) {
-        log.error "${app.name}: HTTP error acquiring token: ${e.statusCode}"
-        log.error "${app.name}: Response: ${e.response?.data}"
-        return false
     } catch (Exception e) {
-        log.error "${app.name}: Exception acquiring token: ${e.class.name}: ${e.message}"
-        return false
+        logError("Failed to acquire OAuth token: ${e.message}")
     }
 }
 
@@ -1028,17 +916,17 @@ private def renderOAuthSuccess() {
 /**
  * Renders failure page after OAuth error
  */
-private def renderOAuthFailure(String message = "Unknown error") {
-    render contentType: 'text/html', data: """
+private def renderOAuthFailure() {
+    render contentType: 'text/html', data: '''
     <html>
     <head><title>Error</title></head>
     <body style="font-family: sans-serif; padding: 20px;">
         <h2>✗ Connection Failed</h2>
-        <p>${message}</p>
+        <p>Unable to connect to Home Connect.</p>
         <p>Please check the Hubitat logs for details and try again.</p>
     </body>
     </html>
-    """
+    '''
 }
 
 /* ===========================================================================================================
