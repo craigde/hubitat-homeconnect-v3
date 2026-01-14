@@ -34,5 +34,12 @@
       "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectDishwasher.groovy",
       "required": false
     }
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-coffeemaker",
+      "name": "Home Connect Coffee Maker v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectCoffeeMaker.groovy",
+      "required": false
+    }
   ]
 }
