@@ -32,6 +32,13 @@
  *  Commands prefixed with z_ are called by the parent app to pass data to the driver.
  *  They are not intended for user interaction and are grouped at the bottom of the command list.
  *  
+ *  Debugging:
+ *  ----------
+ *  Enable "Debug Logging" in preferences to capture detailed event information.
+ *  Use "dumpState" command to output all current attribute values.
+ *  Use "getDiscoveredKeys" to see all event keys received from your appliance.
+ *  Check "lastUnhandledEvent" attribute for events not yet supported by this driver.
+ *  
  *  ===========================================================================================================
  *
  *  Version History:
@@ -46,6 +53,10 @@
  *                     Added simple start() command for automation
  *                     Updated program dropdown with friendly names (Heavy, Normal, etc.)
  *  3.0.3  2026-01-09  Fixed start command definition for Hubitat compatibility
+ *  3.0.4  2026-01-14  Enhanced debugging for remote troubleshooting
+ *                     Added dumpState, getDiscoveredKeys commands
+ *                     Added lastUnhandledEvent, recentEvents tracking
+ *                     Added raw event logging option
  */
 
 import groovy.json.JsonSlurper
@@ -117,6 +128,15 @@ metadata {
         ]
 
         // =====================================================================
+        // DEBUGGING COMMANDS
+        // =====================================================================
+        
+        command "dumpState", [[name: "description", description: "Logs all current attribute values to help with troubleshooting"]]
+        command "getDiscoveredKeys", [[name: "description", description: "Shows all event keys received from your appliance"]]
+        command "clearDiscoveredKeys", [[name: "description", description: "Clears the list of discovered event keys"]]
+        command "getRecentEvents", [[name: "count", type: "NUMBER", description: "Number of recent events to display (default 10)"]]
+
+        // =====================================================================
         // ATTRIBUTES - Status
         // =====================================================================
         
@@ -183,6 +203,16 @@ metadata {
         attribute "lastCommandStatus", "string"     // Success/failure of last command
 
         // =====================================================================
+        // ATTRIBUTES - Debugging
+        // =====================================================================
+        
+        attribute "lastUnhandledEvent", "string"        // Most recent unhandled event key=value
+        attribute "lastUnhandledEventTime", "string"    // When it occurred
+        attribute "lastCommandSent", "string"           // Last command sent to API
+        attribute "lastCommandTime", "string"           // When command was sent
+        attribute "discoveredKeysCount", "number"       // Count of unique event keys seen
+
+        // =====================================================================
         // ATTRIBUTES - Lists & Meta
         // =====================================================================
         
@@ -211,6 +241,12 @@ metadata {
     preferences {
         input name: "debugLogging", type: "bool", title: "Enable debug logging", defaultValue: false,
               description: "Enable detailed logging for troubleshooting"
+        input name: "traceLogging", type: "bool", title: "Enable trace logging", defaultValue: false,
+              description: "Enable verbose trace logging (very detailed, may impact performance)"
+        input name: "logRawEvents", type: "bool", title: "Log raw events", defaultValue: false,
+              description: "Log complete raw event data before parsing (useful for reporting issues)"
+        input name: "maxRecentEvents", type: "number", title: "Recent events to keep", defaultValue: 20,
+              description: "Number of recent events to store for troubleshooting (0 to disable)"
     }
 }
 
@@ -218,7 +254,8 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.0.3"
+@Field static final String DRIVER_VERSION = "3.0.4"
+@Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
    LIFECYCLE METHODS
@@ -226,6 +263,7 @@ metadata {
 
 def installed() {
     log.info "${device.displayName}: Installed"
+    initializeState()
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
     sendEvent(name: "eventPresentState", value: "Off")
     
@@ -240,6 +278,21 @@ def installed() {
 def updated() {
     log.info "${device.displayName}: Updated"
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+    
+    // Initialize state if needed
+    if (state.discoveredKeys == null) {
+        initializeState()
+    }
+}
+
+/**
+ * Initializes state variables for debugging
+ */
+private void initializeState() {
+    if (state.discoveredKeys == null) state.discoveredKeys = [:]
+    if (state.recentEvents == null) state.recentEvents = []
+    if (state.programMap == null) state.programMap = [:]
+    if (state.programNames == null) state.programNames = []
 }
 
 /**
@@ -247,6 +300,7 @@ def updated() {
  */
 def initialize() {
     logInfo("Initializing")
+    initializeState()
     parent?.initializeStatus(device)
     runIn(5, "getAvailablePrograms")
 }
@@ -263,6 +317,155 @@ def refresh() {
 def configure() {
     logInfo("Configuring")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+    initializeState()
+}
+
+/* ===========================================================================================================
+   DEBUGGING COMMANDS
+   =========================================================================================================== */
+
+/**
+ * Dumps all current attribute values to the log
+ * Useful for troubleshooting and reporting issues
+ */
+def dumpState() {
+    logInfo("=== DEVICE STATE DUMP ===")
+    logInfo("Driver Version: ${DRIVER_VERSION}")
+    logInfo("Device Network ID: ${device.deviceNetworkId}")
+    logInfo("")
+    
+    logInfo("--- Current Attributes ---")
+    device.currentStates.each { attr ->
+        logInfo("  ${attr.name}: ${attr.value}")
+    }
+    
+    logInfo("")
+    logInfo("--- State Variables ---")
+    logInfo("  programMap keys: ${state.programMap?.keySet()?.join(', ') ?: 'none'}")
+    logInfo("  programNames: ${state.programNames?.join(', ') ?: 'none'}")
+    logInfo("  discoveredKeys count: ${state.discoveredKeys?.size() ?: 0}")
+    logInfo("  recentEvents count: ${state.recentEvents?.size() ?: 0}")
+    
+    logInfo("")
+    logInfo("--- Settings ---")
+    logInfo("  debugLogging: ${debugLogging}")
+    logInfo("  traceLogging: ${traceLogging}")
+    logInfo("  logRawEvents: ${logRawEvents}")
+    logInfo("  maxRecentEvents: ${maxRecentEvents}")
+    
+    logInfo("=== END STATE DUMP ===")
+}
+
+/**
+ * Shows all event keys that have been received from the appliance
+ * Helps identify what keys a specific appliance model sends
+ */
+def getDiscoveredKeys() {
+    logInfo("=== DISCOVERED EVENT KEYS ===")
+    logInfo("Total unique keys: ${state.discoveredKeys?.size() ?: 0}")
+    logInfo("")
+    
+    state.discoveredKeys?.sort()?.each { key, info ->
+        logInfo("  ${key}")
+        logInfo("    Last value: ${info.lastValue}")
+        logInfo("    Count: ${info.count}")
+        logInfo("    First seen: ${info.firstSeen}")
+        logInfo("    Last seen: ${info.lastSeen}")
+        logInfo("")
+    }
+    
+    logInfo("=== END DISCOVERED KEYS ===")
+    
+    // Also update the count attribute
+    sendEvent(name: "discoveredKeysCount", value: state.discoveredKeys?.size() ?: 0)
+}
+
+/**
+ * Clears the discovered keys list
+ */
+def clearDiscoveredKeys() {
+    logInfo("Clearing discovered keys")
+    state.discoveredKeys = [:]
+    sendEvent(name: "discoveredKeysCount", value: 0)
+}
+
+/**
+ * Shows recent events for troubleshooting
+ */
+def getRecentEvents(BigDecimal count = 10) {
+    Integer num = count?.toInteger() ?: 10
+    logInfo("=== RECENT EVENTS (last ${num}) ===")
+    
+    def events = state.recentEvents ?: []
+    def toShow = events.take(num)
+    
+    toShow.eachWithIndex { evt, idx ->
+        logInfo("${idx + 1}. [${evt.time}] ${evt.key} = ${evt.value}")
+    }
+    
+    if (events.size() > num) {
+        logInfo("... and ${events.size() - num} more events stored")
+    }
+    
+    logInfo("=== END RECENT EVENTS ===")
+}
+
+/**
+ * Records an event for debugging purposes
+ */
+private void recordEvent(Map evt) {
+    if (!evt?.key) return
+    
+    def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+    
+    // Track discovered keys
+    if (state.discoveredKeys == null) state.discoveredKeys = [:]
+    
+    if (state.discoveredKeys.size() < MAX_DISCOVERED_KEYS) {
+        if (!state.discoveredKeys.containsKey(evt.key)) {
+            state.discoveredKeys[evt.key] = [
+                firstSeen: timestamp,
+                lastSeen: timestamp,
+                lastValue: evt.value?.toString()?.take(100),  // Truncate long values
+                count: 1
+            ]
+        } else {
+            state.discoveredKeys[evt.key].lastSeen = timestamp
+            state.discoveredKeys[evt.key].lastValue = evt.value?.toString()?.take(100)
+            state.discoveredKeys[evt.key].count = (state.discoveredKeys[evt.key].count ?: 0) + 1
+        }
+    }
+    
+    // Track recent events
+    def maxEvents = (settings?.maxRecentEvents ?: 20) as Integer
+    if (maxEvents > 0) {
+        if (state.recentEvents == null) state.recentEvents = []
+        
+        state.recentEvents.add(0, [
+            time: timestamp,
+            key: evt.key,
+            value: evt.value?.toString()?.take(100),
+            displayvalue: evt.displayvalue?.take(50)
+        ])
+        
+        // Trim to max size
+        if (state.recentEvents.size() > maxEvents) {
+            state.recentEvents = state.recentEvents.take(maxEvents)
+        }
+    }
+}
+
+/**
+ * Records a command being sent for debugging
+ */
+private void recordCommand(String command, Map params = [:]) {
+    def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+    def cmdInfo = params ? "${command}: ${params}" : command
+    
+    sendEvent(name: "lastCommandSent", value: cmdInfo.take(200))
+    sendEvent(name: "lastCommandTime", value: timestamp)
+    
+    logDebug("Command sent: ${cmdInfo}")
 }
 
 /* ===========================================================================================================
@@ -289,6 +492,7 @@ def off() {
  */
 def getAvailablePrograms() {
     logInfo("Fetching available programs")
+    recordCommand("getAvailablePrograms")
     parent?.getAvailableProgramList(device)
 }
 
@@ -314,6 +518,7 @@ def startProgram(String program = null) {
     saveLastProgram(selectedProgram)
     
     logInfo("Starting program: ${selectedProgram} (${programKey})")
+    recordCommand("startProgram", [program: selectedProgram, key: programKey])
     parent?.startProgram(device, programKey)
 }
 
@@ -326,6 +531,7 @@ def startProgramByKey(String programKey) {
     saveLastProgram(programName)
     
     logInfo("Starting program by key: ${programKey}")
+    recordCommand("startProgramByKey", [key: programKey])
     parent?.startProgram(device, programKey)
 }
 
@@ -343,6 +549,7 @@ def startProgramDelayed(BigDecimal delayMinutes, String program = null) {
     saveLastProgram(selectedProgram)
     
     logInfo("Starting program '${selectedProgram}' with ${minutes} minute delay")
+    recordCommand("startProgramDelayed", [program: selectedProgram, key: programKey, delayMinutes: minutes])
     
     def options = [[key: "BSH.Common.Option.StartInRelative", value: delaySeconds, unit: "seconds"]]
     parent?.startProgram(device, programKey, options)
@@ -353,6 +560,7 @@ def startProgramDelayed(BigDecimal delayMinutes, String program = null) {
  */
 def stopProgram() {
     logInfo("Stopping program")
+    recordCommand("stopProgram")
     parent?.stopProgram(device)
 }
 
@@ -362,6 +570,7 @@ def stopProgram() {
 def setPower(String powerState) {
     boolean on = (powerState == "on")
     logInfo("Setting power: ${on ? 'ON' : 'OFF'}")
+    recordCommand("setPower", [state: powerState])
     parent?.setPowerState(device, on)
 }
 
@@ -371,6 +580,7 @@ def setPower(String powerState) {
  */
 def setProgramOption(String optionKey, String value) {
     logInfo("Setting option ${optionKey} = ${value}")
+    recordCommand("setProgramOption", [key: optionKey, value: value])
     
     // Convert to appropriate type
     def typedValue = value
@@ -451,6 +661,7 @@ private void saveLastProgram(String program) {
  */
 def z_parseStatus(String json) {
     logDebug("Parsing status")
+    logTrace("Status JSON: ${json}")
     def list = new JsonSlurper().parseText(json)
     parseItemList(list)
 }
@@ -460,6 +671,7 @@ def z_parseStatus(String json) {
  */
 def z_parseSettings(String json) {
     logDebug("Parsing settings")
+    logTrace("Settings JSON: ${json}")
     def list = new JsonSlurper().parseText(json)
     parseItemList(list)
 }
@@ -469,6 +681,7 @@ def z_parseSettings(String json) {
  */
 def z_parseAvailablePrograms(String json) {
     logDebug("Parsing available programs")
+    logTrace("Programs JSON: ${json}")
     def list = new JsonSlurper().parseText(json)
     
     def programMap = [:]
@@ -501,6 +714,7 @@ def z_parseAvailablePrograms(String json) {
  */
 def z_parseAvailableOptions(String json) {
     logDebug("Parsing available options")
+    logTrace("Options JSON: ${json}")
     def list = new JsonSlurper().parseText(json)
     def names = list.collect { it.name ?: extractEnum(it.key) }
     sendEvent(name: "availableOptionsList", value: names.join(", "))
@@ -511,6 +725,7 @@ def z_parseAvailableOptions(String json) {
  */
 def z_parseActiveProgram(String json) {
     logDebug("Parsing active program")
+    logTrace("Active program JSON: ${json}")
     def obj = new JsonSlurper().parseText(json)
 
     // Extract program name
@@ -584,7 +799,16 @@ private void parseItemList(List items) {
 def parseEvent(Map evt) {
     if (!evt?.key) return
     
+    // Log raw event if enabled
+    if (settings?.logRawEvents) {
+        log.debug "${device.displayName}: RAW EVENT: ${evt}"
+    }
+    
+    // Record event for debugging
+    recordEvent(evt)
+    
     logDebug("Event: ${evt.key} = ${evt.value}")
+    logTrace("Event details: key=${evt.key}, value=${evt.value}, displayvalue=${evt.displayvalue}, unit=${evt.unit}")
 
     switch (evt.key) {
 
@@ -693,6 +917,7 @@ def parseEvent(Map evt) {
         case ~/Dishcare\.Dishwasher\.Option\..*/:
             def attr = evt.key.split("\\.").last()
             sendEvent(name: attr, value: evt.value.toString())
+            logDebug("Dishwasher option: ${attr} = ${evt.value}")
             break
 
         // ===== Dishwasher Events =====
@@ -720,7 +945,17 @@ def parseEvent(Map evt) {
 
         // ===== Unhandled =====
         default:
-            logDebug("Unhandled event: ${evt.key}")
+            logDebug("Unhandled event: ${evt.key} = ${evt.value}")
+            
+            // Store unhandled event for troubleshooting
+            def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+            sendEvent(name: "lastUnhandledEvent", value: "${evt.key}=${evt.value}".take(200))
+            sendEvent(name: "lastUnhandledEventTime", value: timestamp)
+            
+            // Log at info level if it looks like a significant event
+            if (evt.key?.contains("Event.") || evt.key?.contains("Status.")) {
+                logInfo("UNHANDLED SIGNIFICANT EVENT: ${evt.key} = ${evt.value} - Please report this to the developer")
+            }
     }
 }
 
@@ -941,8 +1176,14 @@ private String secondsToTime(Integer sec) {
    LOGGING METHODS
    =========================================================================================================== */
 
+private void logTrace(String msg) {
+    if (settings?.traceLogging) {
+        log.trace "${device.displayName}: ${msg}"
+    }
+}
+
 private void logDebug(String msg) {
-    if (debugLogging) {
+    if (settings?.debugLogging || settings?.traceLogging) {
         log.debug "${device.displayName}: ${msg}"
     }
 }
