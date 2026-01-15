@@ -19,24 +19,19 @@
  *  This driver represents a Home Connect coffee maker appliance. It receives real-time events from the
  *  Stream Driver (via the parent app) and provides commands to control the coffee maker.
  *  
- *  Event Flow:
- *  -----------
- *  Stream Driver → parent.handleApplianceEvent() → parseEvent() → sendEvent() → attribute update
- *  
- *  Command Flow:
- *  -------------
- *  User command → parent.startProgram() → Stream Driver → Home Connect API
- *  
- *  Internal Commands (z_ prefix):
- *  ------------------------------
- *  Commands prefixed with z_ are called by the parent app to pass data to the driver.
- *  They are not intended for user interaction and are grouped at the bottom of the command list.
+ *  Debugging:
+ *  ----------
+ *  Enable "Debug Logging" in preferences to capture detailed event information.
+ *  Use "dumpState" command to output all current attribute values.
+ *  Use "getDiscoveredKeys" to see all event keys received from your appliance.
+ *  Check "lastUnhandledEvent" attribute for events not yet supported by this driver.
  *  
  *  ===========================================================================================================
  *
  *  Version History:
  *  ----------------
  *  3.0.0  2026-01-14  Initial v3 architecture with parseEvent() pattern
+ *  3.0.1  2026-01-14  Enhanced debugging for remote troubleshooting
  */
 
 import groovy.json.JsonSlurper
@@ -49,28 +44,24 @@ metadata {
         capability "Initialize"
         capability "Refresh"
         capability "Switch"
-        capability "ContactSensor"      // Door state (open/closed) - for American models with doors
+        capability "ContactSensor"
         capability "Sensor"
         capability "Configuration"
-        capability "PushableButton"     // For brew complete notifications
+        capability "PushableButton"
 
         // =====================================================================
         // USER-FACING COMMANDS
         // =====================================================================
         
         command "getAvailablePrograms"
-        
         command "start"
         
         command "makeCoffee", [
             [name: "Beverage", type: "ENUM", constraints: [
-                // Common beverages
                 "Espresso", "EspressoMacchiato", "Coffee", "Cappuccino",
                 "LatteMacchiato", "CaffeLatte", "MilkFroth", "WarmMilk",
                 "Americano", "EspressoDoppio", "FlatWhite", "Cortado",
-                "-- Specialty Drinks --",
-                "CaffeGrandeCrema", "RistrettoMacchiato",
-                "-- Or use startProgramByKey --"
+                "CaffeGrandeCrema", "RistrettoMacchiato"
             ], description: "Select beverage to make"],
             [name: "Bean Amount", type: "ENUM", constraints: [
                 "VeryMild", "Mild", "Normal", "Strong", "VeryStrong", 
@@ -81,13 +72,10 @@ metadata {
         
         command "startProgram", [
             [name: "Program", type: "ENUM", constraints: [
-                // Common beverages
                 "Espresso", "EspressoMacchiato", "Coffee", "Cappuccino",
                 "LatteMacchiato", "CaffeLatte", "MilkFroth", "WarmMilk",
                 "Americano", "EspressoDoppio", "FlatWhite", "Cortado",
-                // Cleaning programs
-                "Rinse", "Clean", "Descale",
-                "-- Or use startProgramByKey --"
+                "Rinse", "Clean", "Descale"
             ], description: "Leave empty to use last program"]
         ]
         
@@ -117,31 +105,40 @@ metadata {
         ]
 
         // =====================================================================
+        // DEBUGGING COMMANDS
+        // =====================================================================
+        
+        command "dumpState"
+        command "getDiscoveredKeys"
+        command "clearDiscoveredKeys"
+        command "getRecentEvents", [[name: "count", type: "NUMBER", description: "Number of recent events (default 10)"]]
+
+        // =====================================================================
         // ATTRIBUTES - Status
         // =====================================================================
         
-        attribute "operationState", "string"        // Ready, Run, Finished, etc.
-        attribute "doorState", "string"             // Open, Closed (American models)
-        attribute "powerState", "string"            // On, Off, Standby
-        attribute "friendlyStatus", "string"        // Human-readable status
+        attribute "operationState", "string"
+        attribute "doorState", "string"
+        attribute "powerState", "string"
+        attribute "friendlyStatus", "string"
 
         // =====================================================================
         // ATTRIBUTES - Program & Progress
         // =====================================================================
         
-        attribute "activeProgram", "string"         // Currently running program
-        attribute "selectedProgram", "string"       // Selected but not started
-        attribute "programProgress", "number"       // 0-100 percent
-        attribute "progressBar", "string"           // "45%"
+        attribute "activeProgram", "string"
+        attribute "selectedProgram", "string"
+        attribute "programProgress", "number"
+        attribute "progressBar", "string"
 
         // =====================================================================
         // ATTRIBUTES - Timing
         // =====================================================================
         
-        attribute "remainingProgramTime", "number"          // Seconds remaining
-        attribute "remainingProgramTimeFormatted", "string" // "00:45"
-        attribute "elapsedProgramTime", "number"            // Seconds elapsed
-        attribute "elapsedProgramTimeFormatted", "string"   // "00:30"
+        attribute "remainingProgramTime", "number"
+        attribute "remainingProgramTimeFormatted", "string"
+        attribute "elapsedProgramTime", "number"
+        attribute "elapsedProgramTimeFormatted", "string"
 
         // =====================================================================
         // ATTRIBUTES - Control State
@@ -152,45 +149,55 @@ metadata {
         attribute "localControlActive", "string"
 
         // =====================================================================
-        // ATTRIBUTES - CoffeeMaker Options (Current Settings)
+        // ATTRIBUTES - CoffeeMaker Options
         // =====================================================================
         
-        attribute "BeanAmount", "string"            // VeryMild, Mild, Normal, Strong, VeryStrong, DoubleShot, etc.
-        attribute "FillQuantity", "number"          // Amount in ml
-        attribute "CoffeeTemperature", "string"     // Normal, High, VeryHigh
-        attribute "BeanContainerSelection", "string" // Which bean container to use
-        attribute "FlowRate", "string"              // Normal, Intense, IntensePlus (for some models)
-        attribute "Aroma", "string"                 // Aroma intensity setting
-        attribute "HotWaterTemperature", "string"   // For hot water dispense
+        attribute "BeanAmount", "string"
+        attribute "FillQuantity", "number"
+        attribute "CoffeeTemperature", "string"
+        attribute "BeanContainerSelection", "string"
+        attribute "FlowRate", "string"
+        attribute "Aroma", "string"
+        attribute "HotWaterTemperature", "string"
 
         // =====================================================================
         // ATTRIBUTES - CoffeeMaker Counters
         // =====================================================================
         
-        attribute "beverageCounterCoffee", "number"         // Total coffee cups made
-        attribute "beverageCounterPowderCoffee", "number"   // Powder coffee count
-        attribute "beverageCounterHotWater", "number"       // Hot water dispenses
-        attribute "beverageCounterHotMilk", "number"        // Hot milk dispenses
-        attribute "beverageCounterFrothedMilk", "number"    // Frothed milk dispenses
-        attribute "beverageCounterMilkCoffee", "number"     // Milk coffee drinks
-        attribute "beverageCounterCoffeeAndMilk", "number"  // Combined counter
+        attribute "beverageCounterCoffee", "number"
+        attribute "beverageCounterPowderCoffee", "number"
+        attribute "beverageCounterHotWater", "number"
+        attribute "beverageCounterHotMilk", "number"
+        attribute "beverageCounterFrothedMilk", "number"
+        attribute "beverageCounterMilkCoffee", "number"
+        attribute "beverageCounterCoffeeAndMilk", "number"
 
         // =====================================================================
         // ATTRIBUTES - CoffeeMaker Events & Alerts
         // =====================================================================
         
-        attribute "BeanContainerEmpty", "string"    // Present, Off, Confirmed
-        attribute "WaterTankEmpty", "string"        // Present, Off, Confirmed
-        attribute "DripTrayFull", "string"          // Present, Off, Confirmed
-        attribute "lastAlert", "string"             // Most recent alert message
-        attribute "lastAlertTime", "string"         // When the alert occurred
+        attribute "BeanContainerEmpty", "string"
+        attribute "WaterTankEmpty", "string"
+        attribute "DripTrayFull", "string"
+        attribute "lastAlert", "string"
+        attribute "lastAlertTime", "string"
 
         // =====================================================================
         // ATTRIBUTES - Integration Support
         // =====================================================================
         
-        attribute "jsonState", "string"             // JSON blob of all state for Node-RED
-        attribute "lastCommandStatus", "string"     // Success/failure of last command
+        attribute "jsonState", "string"
+        attribute "lastCommandStatus", "string"
+
+        // =====================================================================
+        // ATTRIBUTES - Debugging
+        // =====================================================================
+        
+        attribute "lastUnhandledEvent", "string"
+        attribute "lastUnhandledEventTime", "string"
+        attribute "lastCommandSent", "string"
+        attribute "lastCommandTime", "string"
+        attribute "discoveredKeysCount", "number"
 
         // =====================================================================
         // ATTRIBUTES - Lists & Meta
@@ -198,15 +205,14 @@ metadata {
         
         attribute "availableProgramsList", "string"
         attribute "availableOptionsList", "string"
-        attribute "lastProgram", "string"           // Last program used (for defaults)
-        attribute "lastBeverage", "string"          // Last beverage made
+        attribute "lastProgram", "string"
+        attribute "lastBeverage", "string"
         attribute "driverVersion", "string"
         attribute "eventStreamStatus", "string"
         attribute "eventPresentState", "string"
 
         // =====================================================================
         // INTERNAL COMMANDS (z_ prefix)
-        // Called by parent app - not for direct user interaction
         // =====================================================================
         
         command "z_parseStatus", [[name: "json", type: "STRING"]]
@@ -222,23 +228,28 @@ metadata {
     preferences {
         input name: "debugLogging", type: "bool", title: "Enable debug logging", defaultValue: false,
               description: "Enable detailed logging for troubleshooting"
+        input name: "traceLogging", type: "bool", title: "Enable trace logging", defaultValue: false,
+              description: "Enable verbose trace logging (very detailed)"
+        input name: "logRawEvents", type: "bool", title: "Log raw events", defaultValue: false,
+              description: "Log complete raw event data before parsing"
+        input name: "maxRecentEvents", type: "number", title: "Recent events to keep", defaultValue: 20,
+              description: "Number of recent events to store (0 to disable)"
         input name: "defaultBeanAmount", type: "enum", title: "Default Bean Amount",
               options: ["VeryMild", "Mild", "Normal", "Strong", "VeryStrong", "DoubleShot"],
-              defaultValue: "Normal", description: "Default strength for beverages"
+              defaultValue: "Normal"
         input name: "defaultFillQuantity", type: "number", title: "Default Fill Quantity (ml)",
-              defaultValue: 120, description: "Default amount for beverages"
+              defaultValue: 120
     }
 }
 
-/* ===========================================================================================================
-   CONSTANTS
-   =========================================================================================================== */
+// =============================================================================
+// CONSTANTS
+// =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.0.0"
+@Field static final String DRIVER_VERSION = "3.0.1"
+@Field static final Integer MAX_DISCOVERED_KEYS = 100
 
-// Program key mappings for coffee maker
 @Field static final Map BEVERAGE_PROGRAMS = [
-    // Standard beverages
     "Espresso": "ConsumerProducts.CoffeeMaker.Program.Beverage.Espresso",
     "EspressoMacchiato": "ConsumerProducts.CoffeeMaker.Program.Beverage.EspressoMacchiato",
     "Coffee": "ConsumerProducts.CoffeeMaker.Program.Beverage.Coffee",
@@ -247,20 +258,17 @@ metadata {
     "CaffeLatte": "ConsumerProducts.CoffeeMaker.Program.Beverage.CaffeLatte",
     "MilkFroth": "ConsumerProducts.CoffeeMaker.Program.Beverage.MilkFroth",
     "WarmMilk": "ConsumerProducts.CoffeeMaker.Program.Beverage.WarmMilk",
-    // Additional beverages
     "Americano": "ConsumerProducts.CoffeeMaker.Program.Beverage.Americano",
     "EspressoDoppio": "ConsumerProducts.CoffeeMaker.Program.Beverage.EspressoDoppio",
     "FlatWhite": "ConsumerProducts.CoffeeMaker.Program.Beverage.FlatWhite",
     "Cortado": "ConsumerProducts.CoffeeMaker.Program.Beverage.Cortado",
     "CaffeGrandeCrema": "ConsumerProducts.CoffeeMaker.Program.Beverage.CaffeGrandeCrema",
     "RistrettoMacchiato": "ConsumerProducts.CoffeeMaker.Program.Beverage.RistrettoMacchiato",
-    // Cleaning programs
     "Rinse": "ConsumerProducts.CoffeeMaker.Program.CoffeeWorld.Rinse",
     "Clean": "ConsumerProducts.CoffeeMaker.Program.Cleaning.Clean",
     "Descale": "ConsumerProducts.CoffeeMaker.Program.Cleaning.Descale"
 ]
 
-// Bean amount mappings
 @Field static final Map BEAN_AMOUNTS = [
     "VeryMild": "ConsumerProducts.CoffeeMaker.EnumType.BeanAmount.VeryMild",
     "Mild": "ConsumerProducts.CoffeeMaker.EnumType.BeanAmount.Mild",
@@ -273,50 +281,45 @@ metadata {
     "TripleShot": "ConsumerProducts.CoffeeMaker.EnumType.BeanAmount.TripleShot"
 ]
 
-// Coffee temperature mappings
 @Field static final Map COFFEE_TEMPS = [
     "Normal": "ConsumerProducts.CoffeeMaker.EnumType.CoffeeTemperature.Normal",
     "High": "ConsumerProducts.CoffeeMaker.EnumType.CoffeeTemperature.High",
     "VeryHigh": "ConsumerProducts.CoffeeMaker.EnumType.CoffeeTemperature.VeryHigh"
 ]
 
-/* ===========================================================================================================
-   LIFECYCLE METHODS
-   =========================================================================================================== */
+// =============================================================================
+// LIFECYCLE METHODS
+// =============================================================================
 
 def installed() {
     log.info "${device.displayName}: Installed"
+    initializeState()
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
     sendEvent(name: "eventPresentState", value: "Off")
-    
-    // Configure pushable button for notifications
-    // Button 1: Brew Complete
-    // Button 2: Bean Container Empty
-    // Button 3: Water Tank Empty
-    // Button 4: Drip Tray Full
     sendEvent(name: "numberOfButtons", value: 4)
-    
-    // Initialize counters
     sendEvent(name: "beverageCounterCoffee", value: 0)
 }
 
 def updated() {
     log.info "${device.displayName}: Updated"
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+    if (state.discoveredKeys == null) initializeState()
 }
 
-/**
- * Initializes the device by fetching current status from Home Connect
- */
+private void initializeState() {
+    if (state.discoveredKeys == null) state.discoveredKeys = [:]
+    if (state.recentEvents == null) state.recentEvents = []
+    if (state.programMap == null) state.programMap = [:]
+    if (state.programNames == null) state.programNames = []
+}
+
 def initialize() {
     logInfo("Initializing")
+    initializeState()
     parent?.initializeStatus(device)
     runIn(5, "getAvailablePrograms")
 }
 
-/**
- * Refreshes all device data from Home Connect
- */
 def refresh() {
     logInfo("Refreshing")
     parent?.initializeStatus(device)
@@ -326,79 +329,176 @@ def refresh() {
 def configure() {
     logInfo("Configuring")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+    initializeState()
 }
 
-/* ===========================================================================================================
-   USER-FACING COMMANDS
-   =========================================================================================================== */
+// =============================================================================
+// DEBUGGING COMMANDS
+// =============================================================================
 
-/**
- * Switch capability - turns power on
- */
+def dumpState() {
+    logInfo("=== DEVICE STATE DUMP ===")
+    logInfo("Driver Version: ${DRIVER_VERSION}")
+    logInfo("Device Network ID: ${device.deviceNetworkId}")
+    logInfo("")
+    
+    logInfo("--- Current Attributes ---")
+    device.currentStates.each { attr ->
+        logInfo("  ${attr.name}: ${attr.value}")
+    }
+    
+    logInfo("")
+    logInfo("--- State Variables ---")
+    logInfo("  programMap keys: ${state.programMap?.keySet()?.join(', ') ?: 'none'}")
+    logInfo("  programNames: ${state.programNames?.join(', ') ?: 'none'}")
+    logInfo("  discoveredKeys count: ${state.discoveredKeys?.size() ?: 0}")
+    logInfo("  recentEvents count: ${state.recentEvents?.size() ?: 0}")
+    
+    logInfo("")
+    logInfo("--- Settings ---")
+    logInfo("  debugLogging: ${debugLogging}")
+    logInfo("  traceLogging: ${traceLogging}")
+    logInfo("  logRawEvents: ${logRawEvents}")
+    logInfo("  defaultBeanAmount: ${defaultBeanAmount}")
+    logInfo("  defaultFillQuantity: ${defaultFillQuantity}")
+    
+    logInfo("=== END STATE DUMP ===")
+}
+
+def getDiscoveredKeys() {
+    logInfo("=== DISCOVERED EVENT KEYS ===")
+    logInfo("Total unique keys: ${state.discoveredKeys?.size() ?: 0}")
+    logInfo("")
+    
+    state.discoveredKeys?.sort()?.each { key, info ->
+        logInfo("  ${key}")
+        logInfo("    Last value: ${info.lastValue}")
+        logInfo("    Count: ${info.count}")
+        logInfo("    First seen: ${info.firstSeen}")
+        logInfo("    Last seen: ${info.lastSeen}")
+    }
+    
+    logInfo("=== END DISCOVERED KEYS ===")
+    sendEvent(name: "discoveredKeysCount", value: state.discoveredKeys?.size() ?: 0)
+}
+
+def clearDiscoveredKeys() {
+    logInfo("Clearing discovered keys")
+    state.discoveredKeys = [:]
+    sendEvent(name: "discoveredKeysCount", value: 0)
+}
+
+def getRecentEvents(BigDecimal count = 10) {
+    Integer num = count?.toInteger() ?: 10
+    logInfo("=== RECENT EVENTS (last ${num}) ===")
+    
+    def events = state.recentEvents ?: []
+    def toShow = events.take(num)
+    
+    toShow.eachWithIndex { evt, idx ->
+        logInfo("${idx + 1}. [${evt.time}] ${evt.key} = ${evt.value}")
+    }
+    
+    if (events.size() > num) {
+        logInfo("... and ${events.size() - num} more events stored")
+    }
+    
+    logInfo("=== END RECENT EVENTS ===")
+}
+
+private void recordEvent(Map evt) {
+    if (!evt?.key) return
+    
+    def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+    
+    if (state.discoveredKeys == null) state.discoveredKeys = [:]
+    
+    if (state.discoveredKeys.size() < MAX_DISCOVERED_KEYS) {
+        if (!state.discoveredKeys.containsKey(evt.key)) {
+            state.discoveredKeys[evt.key] = [
+                firstSeen: timestamp,
+                lastSeen: timestamp,
+                lastValue: evt.value?.toString()?.take(100),
+                count: 1
+            ]
+        } else {
+            state.discoveredKeys[evt.key].lastSeen = timestamp
+            state.discoveredKeys[evt.key].lastValue = evt.value?.toString()?.take(100)
+            state.discoveredKeys[evt.key].count = (state.discoveredKeys[evt.key].count ?: 0) + 1
+        }
+    }
+    
+    def maxEvents = (settings?.maxRecentEvents ?: 20) as Integer
+    if (maxEvents > 0) {
+        if (state.recentEvents == null) state.recentEvents = []
+        
+        state.recentEvents.add(0, [
+            time: timestamp,
+            key: evt.key,
+            value: evt.value?.toString()?.take(100),
+            displayvalue: evt.displayvalue?.take(50)
+        ])
+        
+        if (state.recentEvents.size() > maxEvents) {
+            state.recentEvents = state.recentEvents.take(maxEvents)
+        }
+    }
+}
+
+private void recordCommand(String command, Map params = [:]) {
+    def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+    def cmdInfo = params ? "${command}: ${params}" : command
+    
+    sendEvent(name: "lastCommandSent", value: cmdInfo.take(200))
+    sendEvent(name: "lastCommandTime", value: timestamp)
+    
+    logDebug("Command sent: ${cmdInfo}")
+}
+
+// =============================================================================
+// USER-FACING COMMANDS
+// =============================================================================
+
 def on() { 
     setPower("on") 
 }
 
-/**
- * Switch capability - turns power off
- */
 def off() { 
     setPower("off") 
 }
 
-/**
- * Fetches available programs from the coffee maker
- * Results are returned via z_parseAvailablePrograms callback
- */
 def getAvailablePrograms() {
     logInfo("Fetching available programs")
+    recordCommand("getAvailablePrograms")
     parent?.getAvailableProgramList(device)
 }
 
-/**
- * Starts the last used beverage (or Espresso if none)
- * Convenience command for simple automation
- */
 def start() {
     def beverage = getDefaultProgram()
     logInfo("Starting default beverage: ${beverage}")
     startProgram(beverage)
 }
 
-/**
- * Makes a coffee beverage with optional strength and quantity
- * This is the main command for brewing coffee
- */
 def makeCoffee(String beverage = null, String beanAmount = null, BigDecimal fillQuantity = null) {
     def selectedBeverage = beverage ?: getDefaultProgram()
-    
-    // Skip if it's a separator line
-    if (selectedBeverage?.startsWith("--")) {
-        logWarn("Please select a valid beverage")
-        return
-    }
-    
     def programKey = buildProgramKey(selectedBeverage)
     
-    // Build options list
     def options = []
     
-    // Bean amount
     def strength = beanAmount ?: settings?.defaultBeanAmount ?: "Normal"
     if (BEAN_AMOUNTS.containsKey(strength)) {
         options << [key: "ConsumerProducts.CoffeeMaker.Option.BeanAmount", value: BEAN_AMOUNTS[strength]]
     }
     
-    // Fill quantity
     def quantity = fillQuantity?.toInteger() ?: settings?.defaultFillQuantity?.toInteger() ?: 120
     if (quantity > 0) {
         options << [key: "ConsumerProducts.CoffeeMaker.Option.FillQuantity", value: quantity, unit: "ml"]
     }
     
-    // Remember this beverage for next time
     saveLastProgram(selectedBeverage)
     
     logInfo("Making ${selectedBeverage}: strength=${strength}, quantity=${quantity}ml")
+    recordCommand("makeCoffee", [beverage: selectedBeverage, strength: strength, quantity: quantity])
     
     if (options.size() > 0) {
         parent?.startProgram(device, programKey, options)
@@ -407,47 +507,29 @@ def makeCoffee(String beverage = null, String beanAmount = null, BigDecimal fill
     }
 }
 
-/**
- * Starts a program from the dropdown list
- * If no program specified, uses last program or default
- */
 def startProgram(String program = null) {
     def selectedProgram = program ?: getDefaultProgram()
-    
-    // Skip if it's a separator line
-    if (selectedProgram?.startsWith("--")) {
-        logWarn("Please select a valid program")
-        return
-    }
-    
     def programKey = buildProgramKey(selectedProgram)
     
-    // Remember this program for next time
     saveLastProgram(selectedProgram)
     
     logInfo("Starting program: ${selectedProgram} (${programKey})")
+    recordCommand("startProgram", [program: selectedProgram, key: programKey])
     parent?.startProgram(device, programKey)
 }
 
-/**
- * Starts a program using the full Home Connect key
- */
 def startProgramByKey(String programKey) {
-    // Extract program name for saving
     def programName = extractEnum(programKey)
     saveLastProgram(programName)
     
     logInfo("Starting program by key: ${programKey}")
+    recordCommand("startProgramByKey", [key: programKey])
     parent?.startProgram(device, programKey)
 }
 
-/**
- * Starts a program with all options specified
- */
 def startProgramWithOptions(String program, String beanAmount = null, BigDecimal fillQuantity = null, String coffeeTemp = null) {
     def programKey = buildProgramKey(program)
     
-    // Build options list
     def options = []
     
     if (beanAmount && BEAN_AMOUNTS.containsKey(beanAmount)) {
@@ -465,6 +547,7 @@ def startProgramWithOptions(String program, String beanAmount = null, BigDecimal
     saveLastProgram(program)
     
     logInfo("Starting ${program} with ${options.size()} options")
+    recordCommand("startProgramWithOptions", [program: program, options: options])
     
     if (options.size() > 0) {
         parent?.startProgram(device, programKey, options)
@@ -473,37 +556,28 @@ def startProgramWithOptions(String program, String beanAmount = null, BigDecimal
     }
 }
 
-/**
- * Stops the currently running program
- */
 def stopProgram() {
     logInfo("Stopping program")
+    recordCommand("stopProgram")
     parent?.stopProgram(device)
 }
 
-/**
- * Sets the coffee maker power state
- */
 def setPower(String powerState) {
-    def state = powerState.toLowerCase()
-    logInfo("Setting power: ${state}")
+    def pState = powerState.toLowerCase()
+    logInfo("Setting power: ${pState}")
+    recordCommand("setPower", [state: pState])
     
-    if (state == "standby") {
+    if (pState == "standby") {
         parent?.setPowerState(device, "Standby")
     } else {
-        boolean on = (state == "on")
-        parent?.setPowerState(device, on)
+        parent?.setPowerState(device, pState == "on")
     }
 }
 
-/**
- * Sets an option on the selected program
- * Automatically converts string values to appropriate types
- */
 def setProgramOption(String optionKey, String value) {
     logInfo("Setting option ${optionKey} = ${value}")
+    recordCommand("setProgramOption", [key: optionKey, value: value])
     
-    // Convert to appropriate type
     def typedValue = value
     if (value.isInteger()) {
         typedValue = value.toInteger()
@@ -514,108 +588,65 @@ def setProgramOption(String optionKey, String value) {
     parent?.setSelectedProgramOption(device, optionKey, typedValue)
 }
 
-/**
- * Builds a full program key from a short name
- */
 private String buildProgramKey(String program) {
-    // If already a full key, return as-is
     if (program?.contains(".")) {
         return program
     }
     
-    // Check our static mappings first
     if (BEVERAGE_PROGRAMS.containsKey(program)) {
         return BEVERAGE_PROGRAMS[program]
     }
     
-    // Check if we have a mapping from getAvailablePrograms
     if (state.programMap?.containsKey(program)) {
         return state.programMap[program]
     }
     
-    // Build standard CoffeeMaker beverage program key
     return "ConsumerProducts.CoffeeMaker.Program.Beverage.${program}"
 }
 
-/**
- * Gets the default program to use when none specified
- * Returns: last used beverage, or "Espresso", or first available program
- */
 private String getDefaultProgram() {
-    // First choice: last used beverage
     def lastBeverage = device.currentValue("lastBeverage")
-    if (lastBeverage) {
-        logDebug("Using last beverage: ${lastBeverage}")
-        return lastBeverage
-    }
+    if (lastBeverage) return lastBeverage
     
-    // Second choice: last used program
     def lastProgram = device.currentValue("lastProgram")
-    if (lastProgram) {
-        logDebug("Using last program: ${lastProgram}")
-        return lastProgram
-    }
+    if (lastProgram) return lastProgram
     
-    // Third choice: "Espresso" if available
-    if (state.programNames?.contains("Espresso")) {
-        logDebug("Using default: Espresso")
-        return "Espresso"
-    }
+    if (state.programNames?.contains("Espresso")) return "Espresso"
+    if (state.programNames?.size() > 0) return state.programNames[0]
     
-    // Fourth choice: first available program
-    if (state.programNames?.size() > 0) {
-        def first = state.programNames[0]
-        logDebug("Using first available: ${first}")
-        return first
-    }
-    
-    // Fallback: generic "Espresso" and hope for the best
-    logDebug("No programs known, falling back to Espresso")
     return "Espresso"
 }
 
-/**
- * Saves the program/beverage as the last used for future defaults
- */
 private void saveLastProgram(String program) {
-    if (program && !program.startsWith("--")) {
+    if (program) {
         sendEvent(name: "lastProgram", value: program)
-        // If it's a beverage, also save as lastBeverage
         if (BEVERAGE_PROGRAMS.containsKey(program) || program.contains("Beverage")) {
             sendEvent(name: "lastBeverage", value: program)
         }
-        logDebug("Saved last program: ${program}")
     }
 }
 
-/* ===========================================================================================================
-   INTERNAL COMMANDS (z_ prefix)
-   Called by parent app to pass data to the driver
-   =========================================================================================================== */
+// =============================================================================
+// INTERNAL COMMANDS (z_ prefix)
+// =============================================================================
 
-/**
- * Parses status data from Home Connect API
- */
 def z_parseStatus(String json) {
     logDebug("Parsing status")
+    logTrace("Status JSON: ${json}")
     def list = new JsonSlurper().parseText(json)
     parseItemList(list)
 }
 
-/**
- * Parses settings data from Home Connect API
- */
 def z_parseSettings(String json) {
     logDebug("Parsing settings")
+    logTrace("Settings JSON: ${json}")
     def list = new JsonSlurper().parseText(json)
     parseItemList(list)
 }
 
-/**
- * Parses available programs list
- */
 def z_parseAvailablePrograms(String json) {
     logDebug("Parsing available programs")
+    logTrace("Programs JSON: ${json}")
     def list = new JsonSlurper().parseText(json)
     
     def programMap = [:]
@@ -626,47 +657,33 @@ def z_parseAvailablePrograms(String json) {
         def name = prog.name ?: extractEnum(key)
         programMap[name] = key
         programNames << name
-        logDebug("Program: ${name} -> ${key}")
     }
     
     state.programMap = programMap
     state.programNames = programNames
     
     logInfo("Found ${programNames.size()} available programs: ${programNames.join(', ')}")
-    logInfo("Use 'startProgramByKey' with these keys if dropdown doesn't match your appliance")
-    
-    // Log the full mapping at debug level
-    programMap.each { name, key ->
-        logDebug("  ${name}: ${key}")
-    }
-    
     sendEvent(name: "availableProgramsList", value: programNames.join(", "))
 }
 
-/**
- * Parses available options for a program
- */
 def z_parseAvailableOptions(String json) {
     logDebug("Parsing available options")
+    logTrace("Options JSON: ${json}")
     def list = new JsonSlurper().parseText(json)
     def names = list.collect { it.name ?: extractEnum(it.key) }
     sendEvent(name: "availableOptionsList", value: names.join(", "))
 }
 
-/**
- * Parses active program data including options and timing
- */
 def z_parseActiveProgram(String json) {
     logDebug("Parsing active program")
+    logTrace("Active program JSON: ${json}")
     def obj = new JsonSlurper().parseText(json)
 
-    // Extract program name
     def name = obj?.name ?: obj?.data?.name ?: extractEnum(obj?.key ?: obj?.data?.key)
     if (name) {
         sendEvent(name: "activeProgram", value: name)
     }
 
-    // Parse options
     def options = obj?.options ?: obj?.data?.options
     if (options instanceof List) {
         parseItemList(options)
@@ -675,24 +692,15 @@ def z_parseActiveProgram(String json) {
     updateDerivedState()
 }
 
-/**
- * Updates event stream status (CONNECTED/DISCONNECTED)
- */
 def z_updateEventStreamStatus(String status) {
     logDebug("Event stream status: ${status}")
     sendEvent(name: "eventStreamStatus", value: status)
 }
 
-/**
- * Updates event present state (legacy compatibility)
- */
 def z_updateEventPresentState(String eventState) {
     sendEvent(name: "eventPresentState", value: eventState)
 }
 
-/**
- * Internal logging command - can be called from parent if needed
- */
 def z_deviceLog(String level, String msg) {
     switch (level) {
         case "debug": logDebug(msg); break
@@ -703,13 +711,10 @@ def z_deviceLog(String level, String msg) {
     }
 }
 
-/* ===========================================================================================================
-   EVENT PARSING
-   =========================================================================================================== */
+// =============================================================================
+// EVENT PARSING
+// =============================================================================
 
-/**
- * Converts a list of status/settings items to parseEvent calls
- */
 private void parseItemList(List items) {
     items?.each { item ->
         parseEvent([
@@ -722,32 +727,32 @@ private void parseItemList(List items) {
     }
 }
 
-/**
- * Main event handler - processes incoming events from Home Connect
- * Called by parent app when SSE events are received
- *
- * @param evt Map containing: haId, key, value, displayvalue, unit, eventType
- */
 def parseEvent(Map evt) {
     if (!evt?.key) return
     
+    // Log raw event if enabled
+    if (settings?.logRawEvents) {
+        log.debug "${device.displayName}: RAW EVENT: ${evt}"
+    }
+    
+    // Record event for debugging
+    recordEvent(evt)
+    
     logDebug("Event: ${evt.key} = ${evt.value}")
+    logTrace("Event details: key=${evt.key}, value=${evt.value}, displayvalue=${evt.displayvalue}, unit=${evt.unit}")
 
     switch (evt.key) {
 
-        // ===== Operation State =====
         case "BSH.Common.Status.OperationState":
             def opState = extractEnum(evt.value)
             def previousState = device.currentValue("operationState")
             sendEvent(name: "operationState", value: opState)
             
-            // Push button 1 when brew completes (transition to Finished or Ready)
             if ((opState == "Finished" || opState == "Ready") && previousState == "Run") {
                 logInfo("Brew complete - pushing button 1")
                 sendEvent(name: "pushed", value: 1, isStateChange: true, descriptionText: "Brew complete")
             }
             
-            // Reset timers when program ends
             if (opState in ["Ready", "Inactive", "Finished"]) {
                 resetProgramState()
             }
@@ -755,7 +760,6 @@ def parseEvent(Map evt) {
             updateJsonState()
             break
 
-        // ===== Door State (American models) =====
         case "BSH.Common.Status.DoorState":
             def doorState = extractEnum(evt.value)
             sendEvent(name: "doorState", value: doorState)
@@ -763,7 +767,6 @@ def parseEvent(Map evt) {
             updateJsonState()
             break
 
-        // ===== Remote/Local Control =====
         case "BSH.Common.Status.RemoteControlStartAllowed":
             sendEvent(name: "remoteControlStartAllowed", value: evt.value.toString())
             updateJsonState()
@@ -778,7 +781,6 @@ def parseEvent(Map evt) {
             sendEvent(name: "localControlActive", value: evt.value.toString())
             break
 
-        // ===== Power State =====
         case "BSH.Common.Setting.PowerState":
             def power = extractEnum(evt.value)
             sendEvent(name: "powerState", value: power)
@@ -786,7 +788,6 @@ def parseEvent(Map evt) {
             updateJsonState()
             break
 
-        // ===== Timing =====
         case "BSH.Common.Option.RemainingProgramTime":
             Integer sec = evt.value as Integer
             sendEvent(name: "remainingProgramTime", value: sec)
@@ -809,7 +810,6 @@ def parseEvent(Map evt) {
             updateJsonState()
             break
 
-        // ===== Programs =====
         case "BSH.Common.Root.ActiveProgram":
             sendEvent(name: "activeProgram", value: evt.displayvalue ?: extractEnum(evt.value))
             updateJsonState()
@@ -820,7 +820,6 @@ def parseEvent(Map evt) {
             updateJsonState()
             break
 
-        // ===== CoffeeMaker-Specific Options =====
         case "ConsumerProducts.CoffeeMaker.Option.BeanAmount":
             sendEvent(name: "BeanAmount", value: extractEnum(evt.value))
             break
@@ -849,7 +848,6 @@ def parseEvent(Map evt) {
             sendEvent(name: "HotWaterTemperature", value: extractEnum(evt.value))
             break
 
-        // ===== Beverage Counters =====
         case "ConsumerProducts.CoffeeMaker.Status.BeverageCounterCoffee":
             sendEvent(name: "beverageCounterCoffee", value: evt.value as Integer)
             break
@@ -878,7 +876,6 @@ def parseEvent(Map evt) {
             sendEvent(name: "beverageCounterCoffeeAndMilk", value: evt.value as Integer)
             break
 
-        // ===== CoffeeMaker Events/Alerts =====
         case "ConsumerProducts.CoffeeMaker.Event.BeanContainerEmpty":
             def value = extractEnum(evt.value)
             sendEvent(name: "BeanContainerEmpty", value: value)
@@ -912,25 +909,29 @@ def parseEvent(Map evt) {
             updateJsonState()
             break
 
-        // ===== Generic CoffeeMaker Options (catch-all) =====
         case ~/ConsumerProducts\.CoffeeMaker\.Option\..*/:
             def attr = evt.key.split("\\.").last()
             sendEvent(name: attr, value: evt.value.toString())
+            logDebug("CoffeeMaker option: ${attr} = ${evt.value}")
             break
 
-        // ===== Unhandled =====
         default:
-            logDebug("Unhandled event: ${evt.key}")
+            logDebug("Unhandled event: ${evt.key} = ${evt.value}")
+            
+            def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+            sendEvent(name: "lastUnhandledEvent", value: "${evt.key}=${evt.value}".take(200))
+            sendEvent(name: "lastUnhandledEventTime", value: timestamp)
+            
+            if (evt.key?.contains("Event.") || evt.key?.contains("Status.")) {
+                logInfo("UNHANDLED SIGNIFICANT EVENT: ${evt.key} = ${evt.value} - Please report this")
+            }
     }
 }
 
-/* ===========================================================================================================
-   DERIVED STATE CALCULATIONS
-   =========================================================================================================== */
+// =============================================================================
+// DERIVED STATE
+// =============================================================================
 
-/**
- * Resets all program-related state when a cycle ends
- */
 private void resetProgramState() {
     logDebug("Resetting program state")
     sendEvent(name: "remainingProgramTime", value: 0)
@@ -941,27 +942,18 @@ private void resetProgramState() {
     sendEvent(name: "progressBar", value: "0%")
 }
 
-/**
- * Updates derived attributes based on current state
- */
 private void updateDerivedState() {
     try {
         String opState = device.currentValue("operationState") as String
-        
-        // Generate friendly status message
         String friendly = determineFriendlyStatus(opState)
         if (friendly) {
             sendEvent(name: "friendlyStatus", value: friendly)
         }
-
     } catch (Exception e) {
         logWarn("Error updating derived state: ${e.message}")
     }
 }
 
-/**
- * Generates a human-readable status message
- */
 private String determineFriendlyStatus(String opState) {
     switch (opState) {
         case "Ready":
@@ -969,14 +961,11 @@ private String determineFriendlyStatus(String opState) {
             return "Ready"
         case "Run":
             def activeProgram = device.currentValue("activeProgram")
-            if (activeProgram) {
-                return "Brewing ${activeProgram}"
-            }
-            return "Brewing"
+            return activeProgram ? "Brewing ${activeProgram}" : "Brewing"
         case "Pause":
             return "Paused"
         case "Finished":
-            return "Ready"  // Coffee makers typically go back to Ready after brewing
+            return "Ready"
         case "ActionRequired":
             return "Action required"
         case "Aborting":
@@ -988,13 +977,10 @@ private String determineFriendlyStatus(String opState) {
     }
 }
 
-/* ===========================================================================================================
-   ALERT HANDLING
-   =========================================================================================================== */
+// =============================================================================
+// ALERT HANDLING
+// =============================================================================
 
-/**
- * Sends an alert event and updates the lastAlert attributes
- */
 private void sendAlert(String alertType, String message) {
     def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss", location?.timeZone ?: TimeZone.getDefault())
     sendEvent(name: "lastAlert", value: "${alertType}: ${message}")
@@ -1002,51 +988,32 @@ private void sendAlert(String alertType, String message) {
     logInfo("Alert: ${alertType} - ${message}")
 }
 
-/* ===========================================================================================================
-   JSON STATE FOR NODE-RED
-   =========================================================================================================== */
+// =============================================================================
+// JSON STATE
+// =============================================================================
 
-/**
- * Updates the jsonState attribute with current device state
- * This provides a single attribute containing all state for easy Node-RED integration
- */
 private void updateJsonState() {
     try {
         def stateMap = [
-            // Status
             operationState: device.currentValue("operationState"),
             doorState: device.currentValue("doorState"),
             powerState: device.currentValue("powerState"),
             friendlyStatus: device.currentValue("friendlyStatus"),
-            
-            // Program
             activeProgram: device.currentValue("activeProgram"),
             selectedProgram: device.currentValue("selectedProgram"),
             programProgress: device.currentValue("programProgress"),
-            
-            // Timing
             remainingProgramTime: device.currentValue("remainingProgramTime"),
             remainingProgramTimeFormatted: device.currentValue("remainingProgramTimeFormatted"),
-            
-            // Options
             beanAmount: device.currentValue("BeanAmount"),
             fillQuantity: device.currentValue("FillQuantity"),
             coffeeTemperature: device.currentValue("CoffeeTemperature"),
-            
-            // Counters
             beverageCounterCoffee: device.currentValue("beverageCounterCoffee"),
-            
-            // Control
             remoteControlStartAllowed: device.currentValue("remoteControlStartAllowed"),
             remoteControlActive: device.currentValue("remoteControlActive"),
-            
-            // Alerts
             beanContainerEmpty: device.currentValue("BeanContainerEmpty") == "Present",
             waterTankEmpty: device.currentValue("WaterTankEmpty") == "Present",
             dripTrayFull: device.currentValue("DripTrayFull") == "Present",
             lastAlert: device.currentValue("lastAlert"),
-            
-            // Meta
             lastBeverage: device.currentValue("lastBeverage"),
             lastUpdate: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         ]
@@ -1059,22 +1026,15 @@ private void updateJsonState() {
     }
 }
 
-/* ===========================================================================================================
-   UTILITY METHODS
-   =========================================================================================================== */
+// =============================================================================
+// UTILITY METHODS
+// =============================================================================
 
-/**
- * Extracts the last segment from a dotted enum value
- * e.g., "ConsumerProducts.CoffeeMaker.EnumType.BeanAmount.Strong" → "Strong"
- */
 private String extractEnum(String full) {
     if (!full) return null
     return full.substring(full.lastIndexOf(".") + 1)
 }
 
-/**
- * Converts seconds to MM:SS format (coffee brewing is typically short)
- */
 private String secondsToTime(Integer sec) {
     if (sec == null || sec <= 0) return "00:00"
     long minutes = sec / 60
@@ -1082,12 +1042,18 @@ private String secondsToTime(Integer sec) {
     return String.format("%02d:%02d", minutes, seconds)
 }
 
-/* ===========================================================================================================
-   LOGGING METHODS
-   =========================================================================================================== */
+// =============================================================================
+// LOGGING METHODS
+// =============================================================================
+
+private void logTrace(String msg) {
+    if (settings?.traceLogging) {
+        log.trace "${device.displayName}: ${msg}"
+    }
+}
 
 private void logDebug(String msg) {
-    if (debugLogging) {
+    if (settings?.debugLogging || settings?.traceLogging) {
         log.debug "${device.displayName}: ${msg}"
     }
 }
