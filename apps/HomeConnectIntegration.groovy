@@ -50,6 +50,9 @@
  *  3.0.7  2026-01-15  Enhanced OAuth debugging for troubleshooting authentication issues
  *                     Added detailed logging of token exchange requests/responses
  *                     Added Cooktop driver mapping
+ *  3.0.8  2026-01-16  More granular OAuth debugging - logs on callback entry point
+ *                     Added OAuth URL length logging to detect truncation
+ *                     Direct log.info calls in callback to bypass log level filtering
  */
 
 import groovy.json.JsonSlurper
@@ -74,7 +77,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.0.7"
+@Field static final String APP_VERSION = "3.0.8"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -207,8 +210,14 @@ def pageAuthentication() {
             }
         }
         section("Debug Info") {
-            paragraph "<small>Redirect URI: ${getOAuthRedirectUrl()}</small>"
+            def cleanRedirectUri = getDisplayRedirectUrl()
+            def fullRedirectUri = getOAuthRedirectUrl()
+            paragraph "<b>Register this URL in Home Connect Developer Portal:</b>"
+            paragraph "<code style='word-break:break-all;'>${cleanRedirectUri}</code>"
+            paragraph "<small>Full redirect URI (with token): ${fullRedirectUri?.take(100)}...</small>"
             paragraph "<small>Client ID length: ${getClientId()?.length() ?: 0} chars</small>"
+            paragraph "<small>Client Secret length: ${getClientSecret()?.length() ?: 0} chars</small>"
+            paragraph "<small>App Version: ${APP_VERSION}</small>"
             if (atomicState.lastOAuthError) {
                 paragraph "<b style='color:red'>Last OAuth Error:</b> ${atomicState.lastOAuthError}"
             }
@@ -779,19 +788,39 @@ mappings {
 private String generateOAuthUrl() {
     def timestamp = now().toString()
     def stateValue = generateSecureState(timestamp)
+    def redirectUri = getOAuthRedirectUrl()
 
+    logInfo("=== Generating OAuth Authorization URL ===")
+    logInfo("Client ID: ${getClientId()?.take(20)}... (${getClientId()?.length()} chars)")
+    logInfo("Redirect URI: ${redirectUri}")
+    logInfo("Redirect URI length: ${redirectUri?.length()} chars")
+    
     def streamDriver = getStreamDriver()
-    def queryString = streamDriver?.toQueryString([
+    
+    // Build query string manually if stream driver not available
+    def params = [
         'client_id': getClientId(),
-        'redirect_uri': getOAuthRedirectUrl(),
+        'redirect_uri': redirectUri,
         'response_type': 'code',
         'scope': 'IdentifyAppliance Monitor Settings Control',
         'state': stateValue
-    ]) ?: ""
+    ]
     
-    logDebug("Generated OAuth URL with redirect: ${getOAuthRedirectUrl()}")
+    def queryString = streamDriver?.toQueryString(params)
     
-    return "${OAUTH_AUTHORIZATION_URL}?${queryString}"
+    if (!queryString) {
+        // Fallback if stream driver not available
+        queryString = params.collect { k, v -> 
+            "${URLEncoder.encode(k, 'UTF-8')}=${URLEncoder.encode(v?.toString() ?: '', 'UTF-8')}" 
+        }.join('&')
+        logDebug("Built query string manually (stream driver not available)")
+    }
+    
+    def fullUrl = "${OAUTH_AUTHORIZATION_URL}?${queryString}"
+    logInfo("Full OAuth URL length: ${fullUrl.length()} chars")
+    logDebug("Full OAuth URL: ${fullUrl.take(200)}...")
+    
+    return fullUrl
 }
 
 /**
@@ -862,6 +891,11 @@ def getDisplayRedirectUrl() {
  * Handles the OAuth callback from Home Connect
  */
 def oAuthCallback() {
+    // Log immediately on entry - before any processing
+    log.info "${app.name}: === OAuth Callback Entry Point ==="
+    log.info "${app.name}: Request received at ${new Date()}"
+    log.info "${app.name}: Raw params: ${params}"
+    
     logInfo("=== OAuth Callback Received ===")
     logDebug("All params: ${params}")
 
@@ -869,6 +903,12 @@ def oAuthCallback() {
     def oAuthState = params.state
     def error = params.error
     def errorDescription = params.error_description
+
+    // Log what we received
+    logInfo("code present: ${code ? 'YES (' + code.take(20) + '...)' : 'NO'}")
+    logInfo("state present: ${oAuthState ? 'YES' : 'NO'}")
+    logInfo("error present: ${error ? 'YES: ' + error : 'NO'}")
+    if (errorDescription) logInfo("error_description: ${errorDescription}")
 
     // Check for error from Home Connect
     if (error) {
@@ -879,13 +919,20 @@ def oAuthCallback() {
 
     if (!code) {
         logError("No authorization code in OAuth callback")
+        logError("Params received: ${params.keySet()}")
         atomicState.lastOAuthError = "No authorization code received"
         return renderOAuthFailure("No authorization code received")
     }
 
     logDebug("Received authorization code: ${code?.take(20)}...")
 
-    if (!oAuthState || !validateSecureState(oAuthState)) {
+    if (!oAuthState) {
+        logError("No state parameter in callback")
+        atomicState.lastOAuthError = "No state parameter - possible redirect issue"
+        return renderOAuthFailure("No state parameter received")
+    }
+    
+    if (!validateSecureState(oAuthState)) {
         logError("Invalid OAuth state in callback")
         atomicState.lastOAuthError = "Invalid state - possible CSRF attack or expired link"
         return renderOAuthFailure("Invalid state parameter")
