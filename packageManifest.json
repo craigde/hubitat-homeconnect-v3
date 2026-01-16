@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "minimumHEVersion": "2.3.0",
-  "dateReleased": "2026-01-09",
+  "dateReleased": "2026-01-15",
   "licenseFile": "",
-  "releaseNotes": "v3.1.0 - Added Coffee Maker Driver",
+  "releaseNotes": "v3.2.0 - Complete appliance support! Added Oven, Hood, Cooktop, FridgeFreezer, WarmingDrawer, Washer, Dryer, WasherDryer, CookProcessor, and CleaningRobot drivers. All drivers include enhanced debugging commands (dumpState, getDiscoveredKeys, getRecentEvents) for remote troubleshooting.",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "",
   "apps": [
@@ -36,9 +36,79 @@
     },
     {
       "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-coffeemaker",
-      "name": "Home Connect Coffee Maker v3",
+      "name": "Home Connect CoffeeMaker v3",
       "namespace": "craigde",
       "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectCoffeeMaker.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-oven",
+      "name": "Home Connect Oven v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectOven.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-hood",
+      "name": "Home Connect Hood v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectHood.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-cooktop",
+      "name": "Home Connect Cooktop v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectCooktop.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-fridgefreezer",
+      "name": "Home Connect FridgeFreezer v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectFridgeFreezer.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-warmingdrawer",
+      "name": "Home Connect WarmingDrawer v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectWarmingDrawer.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-washer",
+      "name": "Home Connect Washer v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectWasher.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-dryer",
+      "name": "Home Connect Dryer v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectDryer.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-washerdryer",
+      "name": "Home Connect WasherDryer v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectWasherDryer.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-cookprocessor",
+      "name": "Home Connect CookProcessor v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectCookProcessor.groovy",
+      "required": false
+    },
+    {
+      "id": "e9f8a7b6-5c4d-3e2f-1a0b-homeconnect-v3-cleaningrobot",
+      "name": "Home Connect CleaningRobot v3",
+      "namespace": "craigde",
+      "location": "https://raw.githubusercontent.com/craigde/hubitat-homeconnect-v3/main/drivers/HomeConnectCleaningRobot.groovy",
       "required": false
     }
   ]
