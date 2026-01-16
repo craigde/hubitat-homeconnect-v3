@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "minimumHEVersion": "2.3.0",
   "dateReleased": "2026-01-15",
   "licenseFile": "",
-  "releaseNotes": "v3.2.1 - Additional Auth debug and Complete appliance support! Added Oven, Hood, Cooktop, FridgeFreezer, WarmingDrawer, Washer, Dryer, WasherDryer, CookProcessor, and CleaningRobot drivers. All drivers include enhanced debugging commands (dumpState, getDiscoveredKeys, getRecentEvents) for remote troubleshooting.",
+  "releaseNotes": "v3.2.2 - Additional Auth debug and Complete appliance support! Added Oven, Hood, Cooktop, FridgeFreezer, WarmingDrawer, Washer, Dryer, WasherDryer, CookProcessor, and CleaningRobot drivers. All drivers include enhanced debugging commands (dumpState, getDiscoveredKeys, getRecentEvents) for remote troubleshooting.",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "",
   "apps": [
