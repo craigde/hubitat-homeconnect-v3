@@ -47,6 +47,9 @@
  *                     Improved error handling for devices without programs
  *                     Added delayed device initialization after discovery
  *  3.0.6  2026-01-11  Fixed device creation on first install (foundDevices timing issue)
+ *  3.0.7  2026-01-15  Enhanced OAuth debugging for troubleshooting authentication issues
+ *                     Added detailed logging of token exchange requests/responses
+ *                     Added Cooktop driver mapping
  */
 
 import groovy.json.JsonSlurper
@@ -71,7 +74,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.0.6"
+@Field static final String APP_VERSION = "3.0.7"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -82,8 +85,8 @@ definition(
    SETTINGS ACCESSORS
    =========================================================================================================== */
 
-private getClientId()     { settings.clientId }
-private getClientSecret() { settings.clientSecret }
+private getClientId()     { settings.clientId?.trim() }
+private getClientSecret() { settings.clientSecret?.trim() }
 
 /* ===========================================================================================================
    LIFECYCLE METHODS
@@ -201,6 +204,13 @@ def pageAuthentication() {
                 paragraph 'Click the button below to connect your Home Connect account.'
                 href url: generateOAuthUrl(), style: 'external', required: false,
                      title: "Connect to Home Connect", description: "Tap to authenticate"
+            }
+        }
+        section("Debug Info") {
+            paragraph "<small>Redirect URI: ${getOAuthRedirectUrl()}</small>"
+            paragraph "<small>Client ID length: ${getClientId()?.length() ?: 0} chars</small>"
+            if (atomicState.lastOAuthError) {
+                paragraph "<b style='color:red'>Last OAuth Error:</b> ${atomicState.lastOAuthError}"
             }
         }
     }
@@ -419,17 +429,19 @@ private String getDriverNameForType(String type) {
         "CleaningRobot": "Home Connect CleaningRobot v3",
         "CoffeeMaker": "Home Connect CoffeeMaker v3",
         "CookProcessor": "Home Connect CookProcessor v3",
+        "Cooktop": "Home Connect Cooktop v3",
         "Dishwasher": "Home Connect Dishwasher v3",
         "Dryer": "Home Connect Dryer v3",
         "Freezer": "Home Connect FridgeFreezer v3",
         "FridgeFreezer": "Home Connect FridgeFreezer v3",
-        "Hob": "Home Connect Hob v3",
+        "Hob": "Home Connect Cooktop v3",
         "Hood": "Home Connect Hood v3",
         "Oven": "Home Connect Oven v3",
         "Refrigerator": "Home Connect FridgeFreezer v3",
         "Washer": "Home Connect Washer v3",
         "WasherDryer": "Home Connect WasherDryer v3",
-        "WineCooler": "Home Connect WineCooler v3"
+        "WarmingDrawer": "Home Connect WarmingDrawer v3",
+        "WineCooler": "Home Connect FridgeFreezer v3"
     ]
     
     return driverMap[type]
@@ -699,6 +711,26 @@ def setSelectedProgramOption(device, String optionKey, def optionValue) {
     }
 }
 
+/**
+ * Sends a command to an appliance
+ */
+def sendCommand(device, String commandKey) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
+    logDebug("Sending command ${commandKey} to ${haId}")
+    
+    try {
+        streamDriver?.apiPut("/api/homeappliances/${haId}/commands/${commandKey}", [data: [key: commandKey]]) { response ->
+            logDebug("sendCommand response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Command sent: ${commandKey}")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to send command: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
+    }
+}
+
 /* ===========================================================================================================
    OAUTH TOKEN MANAGEMENT
    =========================================================================================================== */
@@ -757,6 +789,8 @@ private String generateOAuthUrl() {
         'state': stateValue
     ]) ?: ""
     
+    logDebug("Generated OAuth URL with redirect: ${getOAuthRedirectUrl()}")
+    
     return "${OAUTH_AUTHORIZATION_URL}?${queryString}"
 }
 
@@ -810,41 +844,65 @@ private boolean validateSecureState(String stateValue) {
 
 /**
  * Gets the OAuth redirect URL for callbacks
+ * This is the URL that Home Connect will redirect to after authentication
  */
 private String getOAuthRedirectUrl() {
     return "${getFullApiServerUrl()}/oauth/callback?access_token=${atomicState.accessToken}"
 }
 
 /**
+ * Gets the clean redirect URL for display/registration (without access_token)
+ * Use THIS URL when registering in the Home Connect Developer Portal
+ */
+def getDisplayRedirectUrl() {
+    return "${getFullApiServerUrl()}/oauth/callback"
+}
+
+/**
  * Handles the OAuth callback from Home Connect
  */
 def oAuthCallback() {
-    logDebug("Received OAuth callback")
+    logInfo("=== OAuth Callback Received ===")
+    logDebug("All params: ${params}")
 
     def code = params.code
     def oAuthState = params.state
+    def error = params.error
+    def errorDescription = params.error_description
+
+    // Check for error from Home Connect
+    if (error) {
+        logError("OAuth error from Home Connect: ${error} - ${errorDescription}")
+        atomicState.lastOAuthError = "${error}: ${errorDescription}"
+        return renderOAuthFailure("${error}: ${errorDescription}")
+    }
 
     if (!code) {
         logError("No authorization code in OAuth callback")
-        return renderOAuthFailure()
+        atomicState.lastOAuthError = "No authorization code received"
+        return renderOAuthFailure("No authorization code received")
     }
+
+    logDebug("Received authorization code: ${code?.take(20)}...")
 
     if (!oAuthState || !validateSecureState(oAuthState)) {
         logError("Invalid OAuth state in callback")
-        return renderOAuthFailure()
+        atomicState.lastOAuthError = "Invalid state - possible CSRF attack or expired link"
+        return renderOAuthFailure("Invalid state parameter")
     }
 
     // Clear any existing tokens
     atomicState.oAuthRefreshToken = null
     atomicState.oAuthAuthToken = null
     atomicState.oAuthTokenExpires = null
+    atomicState.lastOAuthError = null
 
     // Exchange code for tokens
-    acquireOAuthToken(code)
+    def success = acquireOAuthToken(code)
 
-    if (!atomicState.oAuthAuthToken) {
+    if (!success || !atomicState.oAuthAuthToken) {
         logError("Failed to acquire OAuth token")
-        return renderOAuthFailure()
+        return renderOAuthFailure(atomicState.lastOAuthError ?: "Failed to exchange code for token")
     }
 
     logInfo("OAuth authentication successful")
@@ -853,16 +911,31 @@ def oAuthCallback() {
 
 /**
  * Exchanges authorization code for access token
+ * Returns true on success, false on failure
  */
-private void acquireOAuthToken(String code) {
-    logDebug("Acquiring OAuth token")
-    apiRequestAccessToken([
+private boolean acquireOAuthToken(String code) {
+    logInfo("=== Acquiring OAuth Token ===")
+    
+    def redirectUri = getOAuthRedirectUrl()
+    
+    def body = [
         'grant_type': 'authorization_code',
         'code': code,
         'client_id': getClientId(),
         'client_secret': getClientSecret(),
-        'redirect_uri': getOAuthRedirectUrl()
-    ])
+        'redirect_uri': redirectUri
+    ]
+    
+    // Log what we're sending (mask secrets)
+    logDebug("Token request to: ${OAUTH_TOKEN_URL}")
+    logDebug("Token request body:")
+    logDebug("  grant_type: authorization_code")
+    logDebug("  code: ${code?.take(20)}...")
+    logDebug("  client_id: ${getClientId()?.take(20)}... (${getClientId()?.length()} chars)")
+    logDebug("  client_secret: [MASKED] (${getClientSecret()?.length()} chars)")
+    logDebug("  redirect_uri: ${redirectUri}")
+    
+    return apiRequestAccessToken(body)
 }
 
 /**
@@ -870,6 +943,12 @@ private void acquireOAuthToken(String code) {
  */
 private void refreshOAuthToken() {
     logDebug("Refreshing OAuth token")
+    
+    if (!atomicState.oAuthRefreshToken) {
+        logError("No refresh token available")
+        return
+    }
+    
     apiRequestAccessToken([
         'grant_type': 'refresh_token',
         'refresh_token': atomicState.oAuthRefreshToken,
@@ -879,21 +958,60 @@ private void refreshOAuthToken() {
 
 /**
  * Makes the OAuth token request
+ * Returns true on success, false on failure
  */
-private void apiRequestAccessToken(Map body) {
+private boolean apiRequestAccessToken(Map body) {
     try {
-        httpPost(uri: OAUTH_TOKEN_URL, requestContentType: 'application/x-www-form-urlencoded', body: body) { response ->
+        def success = false
+        
+        httpPost(
+            uri: OAUTH_TOKEN_URL, 
+            requestContentType: 'application/x-www-form-urlencoded', 
+            body: body
+        ) { response ->
+            logDebug("Token response status: ${response.status}")
+            
             if (response?.data && response.success) {
                 atomicState.oAuthRefreshToken = response.data.refresh_token
                 atomicState.oAuthAuthToken = response.data.access_token
                 atomicState.oAuthTokenExpires = now() + (response.data.expires_in * 1000)
-                logDebug("OAuth token acquired, expires in ${response.data.expires_in}s")
+                logInfo("OAuth token acquired successfully, expires in ${response.data.expires_in}s")
+                success = true
             } else {
-                logError("Failed to acquire OAuth token - response unsuccessful")
+                logError("Token response unsuccessful: ${response.data}")
+                atomicState.lastOAuthError = "Token response unsuccessful"
             }
         }
+        
+        return success
+        
+    } catch (groovyx.net.http.HttpResponseException e) {
+        def statusCode = e.getStatusCode()
+        def responseBody = e.getResponse()?.getData()
+        
+        logError("=== OAuth Token Error ===")
+        logError("HTTP Status: ${statusCode}")
+        logError("Response: ${responseBody}")
+        
+        // Parse error details if JSON
+        try {
+            if (responseBody instanceof Map) {
+                atomicState.lastOAuthError = "${responseBody.error}: ${responseBody.error_description}"
+                logError("Error: ${responseBody.error}")
+                logError("Description: ${responseBody.error_description}")
+            } else {
+                atomicState.lastOAuthError = "HTTP ${statusCode}: ${responseBody}"
+            }
+        } catch (Exception parseEx) {
+            atomicState.lastOAuthError = "HTTP ${statusCode}"
+        }
+        
+        return false
+        
     } catch (Exception e) {
-        logError("Failed to acquire OAuth token: ${e.message}")
+        logError("Token request exception: ${e.class.name}: ${e.message}")
+        atomicState.lastOAuthError = e.message
+        return false
     }
 }
 
@@ -916,17 +1034,26 @@ private def renderOAuthSuccess() {
 /**
  * Renders failure page after OAuth error
  */
-private def renderOAuthFailure() {
-    render contentType: 'text/html', data: '''
+private def renderOAuthFailure(String errorMessage = null) {
+    def errorHtml = errorMessage ? "<p><b>Error:</b> ${errorMessage}</p>" : ""
+    
+    render contentType: 'text/html', data: """
     <html>
     <head><title>Error</title></head>
     <body style="font-family: sans-serif; padding: 20px;">
         <h2>✗ Connection Failed</h2>
         <p>Unable to connect to Home Connect.</p>
-        <p>Please check the Hubitat logs for details and try again.</p>
+        ${errorHtml}
+        <p>Please check the following:</p>
+        <ul>
+            <li>Client ID and Client Secret are correct (no extra spaces)</li>
+            <li>The Redirect URI in Home Connect Developer Portal matches exactly</li>
+            <li>You waited 30+ minutes after creating the application</li>
+        </ul>
+        <p>Check the Hubitat logs for more details.</p>
     </body>
     </html>
-    '''
+    """
 }
 
 /* ===========================================================================================================
