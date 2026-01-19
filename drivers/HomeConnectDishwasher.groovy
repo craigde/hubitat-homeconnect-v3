@@ -57,6 +57,8 @@
  *                     Added dumpState, getDiscoveredKeys commands
  *                     Added lastUnhandledEvent, recentEvents tracking
  *                     Added raw event logging option
+ *  3.0.5  2026-01-18  Added interiorLight attribute for premium dishwashers (Thermador, etc.)
+ *                     Handles BSH.Common.Status.InteriorIlluminationActive event
  */
 
 import groovy.json.JsonSlurper
@@ -185,6 +187,7 @@ metadata {
         attribute "HalfLoad", "string"
         attribute "ExtraDry", "string"
         attribute "HygienePlus", "string"
+        attribute "interiorLight", "enum", ["on", "off"]
 
         // =====================================================================
         // ATTRIBUTES - Events & Alerts
@@ -254,7 +257,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.0.4"
+@Field static final String DRIVER_VERSION = "3.0.5"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -847,6 +850,13 @@ def parseEvent(Map evt) {
             updateJsonState()
             break
 
+        // ===== Interior Light =====
+        case "BSH.Common.Status.InteriorIlluminationActive":
+            def lightState = evt.value ? "on" : "off"
+            sendEvent(name: "interiorLight", value: lightState, descriptionText: "Interior light is ${lightState}")
+            updateJsonState()
+            break
+
         // ===== Remote/Local Control =====
         case "BSH.Common.Status.RemoteControlStartAllowed":
             sendEvent(name: "remoteControlStartAllowed", value: evt.value.toString())
@@ -1114,6 +1124,7 @@ private void updateJsonState() {
             doorState: device.currentValue("doorState"),
             powerState: device.currentValue("powerState"),
             friendlyStatus: device.currentValue("friendlyStatus"),
+            interiorLight: device.currentValue("interiorLight"),
             
             // Program
             activeProgram: device.currentValue("activeProgram"),
