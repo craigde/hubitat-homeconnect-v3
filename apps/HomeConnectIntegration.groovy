@@ -1019,11 +1019,26 @@ private boolean apiRequestAccessToken(Map body) {
             logDebug("Token response status: ${response.status}")
             
             if (response?.data && response.success) {
-                atomicState.oAuthRefreshToken = response.data.refresh_token
-                atomicState.oAuthAuthToken = response.data.access_token
-                atomicState.oAuthTokenExpires = now() + (response.data.expires_in * 1000)
-                logInfo("OAuth token acquired successfully, expires in ${response.data.expires_in}s")
-                success = true
+                def data = response.data
+
+                // Validate required fields exist and are valid
+                if (!data.access_token) {
+                    logError("OAuth token response missing access_token")
+                    atomicState.lastOAuthError = "Missing access_token in response"
+                } else if (!data.refresh_token) {
+                    logError("OAuth token response missing refresh_token")
+                    atomicState.lastOAuthError = "Missing refresh_token in response"
+                } else if (!data.expires_in || !(data.expires_in instanceof Number)) {
+                    logError("OAuth token response has invalid expires_in: ${data.expires_in}")
+                    atomicState.lastOAuthError = "Invalid expires_in value: ${data.expires_in}"
+                } else {
+                    // All validations passed - safe to assign
+                    atomicState.oAuthRefreshToken = data.refresh_token
+                    atomicState.oAuthAuthToken = data.access_token
+                    atomicState.oAuthTokenExpires = now() + (data.expires_in * 1000)
+                    logInfo("OAuth token acquired successfully, expires in ${data.expires_in}s")
+                    success = true
+                }
             } else {
                 logError("Token response unsuccessful: ${response.data}")
                 atomicState.lastOAuthError = "Token response unsuccessful"
