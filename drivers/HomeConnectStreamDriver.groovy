@@ -1,5 +1,5 @@
 /**
- *  Home Connect Stream Driver v3
+ *  Home Connect Integration v3 (Parent App)
  *
  *  Copyright 2026 Craig Dewar
  *
@@ -16,733 +16,263 @@
  *  ARCHITECTURE OVERVIEW
  *  ===========================================================================================================
  *  
- *  This driver serves as the central hub for Home Connect communication:
+ *  This app serves as the coordinator between Home Connect, the Stream Driver, and child appliance drivers:
  *  
- *  1. SSE CONNECTION: Maintains a single Server-Sent Events connection to Home Connect for all appliances.
- *     The connection receives real-time updates (status changes, program progress, events) and routes
- *     them to the appropriate child device drivers via the parent app.
+ *  1. OAUTH MANAGEMENT: Handles authentication with Home Connect, token storage, and refresh
  *  
- *  2. API LIBRARY: Provides HTTP methods (GET/PUT/DELETE) for all Home Connect API calls.
- *     Child drivers don't make API calls directly - they go through the parent app, which
- *     delegates to this driver.
+ *  2. DEVICE DISCOVERY: Retrieves available appliances and creates appropriate child drivers
  *  
- *  3. RATE LIMIT MANAGEMENT: Home Connect enforces strict rate limits (1000 calls/day).
- *     This driver tracks rate limiting, implements conservative reconnect timing, and
- *     automatically schedules reconnection when limits expire.
+ *  3. EVENT ROUTING: Receives events from the Stream Driver and routes them to the correct child device
  *  
- *  Event Flow:
- *  -----------
- *  Home Connect SSE → parse() → processEventPayload() → parent.handleApplianceEvent() → child.parseEvent()
+ *  4. API DELEGATION: Child drivers call parent methods (startProgram, etc.) which delegate to Stream Driver
  *  
- *  API Call Flow:
- *  --------------
- *  Child Driver → parent.startProgram() → streamDriver.setActiveProgram() → Home Connect API
+ *  Component Relationships:
+ *  ------------------------
+ *  
+ *  [Home Connect Cloud]
+ *         ↕ (SSE + REST API)
+ *  [Stream Driver] ←── API calls ──→ [Parent App] ←── Events ──→ [Child Drivers]
+ *         ↓                              ↑                          (Dishwasher, etc.)
+ *    SSE Events ─────────────────────────┘
  *  
  *  ===========================================================================================================
  *
  *  Version History:
  *  ----------------
- *  3.0.0  2026-01-07  Initial v3 architecture with Stream Driver pattern
- *  3.0.1  2026-01-08  Added conservative reconnect logic (5 min delay for normal disconnects)
- *                     Added rate limit detection and auto-recovery scheduling
- *                     Added exponential backoff for failed connections
- *  3.0.2  2026-01-08  Changed to z_setApiUrl for flexible API URL configuration
- *                     Supports both production and simulator APIs via parent app
- *  3.0.3  2026-01-08  Added lastEventReceived timestamp for stream health monitoring
- *                     Added rateLimitRemaining/rateLimitLimit attributes from API headers
+ *  3.0.0  2026-01-07  Initial v3 architecture
+ *                     New child deviceNetworkId prefix "HC3-<haId>"
+ *                     Stream Driver handles SSE and API
+ *                     Safe to run side-by-side with v1
+ *  3.0.1  2026-01-08  Added lastCommandStatus feedback to child devices
+ *                     Improved error handling for devices without programs
+ *                     Added delayed device initialization after discovery
+ *  3.0.6  2026-01-11  Fixed device creation on first install (foundDevices timing issue)
+ *  3.0.7  2026-01-15  Enhanced OAuth debugging for troubleshooting authentication issues
+ *                     Added detailed logging of token exchange requests/responses
+ *                     Added Cooktop driver mapping
+ *  3.0.8  2026-01-16  More granular OAuth debugging - logs on callback entry point
+ *                     Added OAuth URL length logging to detect truncation
+ *                     Direct log.info calls in callback to bypass log level filtering
+ *  3.0.9  2026-01-20  Added setSetting() method for Hood lighting/fan control
+ *                     Enables child drivers to set appliance settings via API
  */
 
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 import groovy.transform.Field
 
-// Buffer for accumulating SSE message fragments across multiple parse() calls
-@Field static String messageBuffer = ""
-
-metadata {
-    definition(name: "Home Connect Stream Driver v3", namespace: "craigde", author: "Craig Dewar") {
-        capability "Initialize"
-        capability "Refresh"
-
-        // User-facing commands
-        command "connect"
-        command "disconnect"
-        command "clearRateLimit"
-
-        // Internal command (z_ prefix convention)
-        command "z_deviceLog", [[name: "level", type: "STRING"], [name: "msg", type: "STRING"]]
-        command "z_setApiUrl", [[name: "url", type: "STRING"]]
-
-        // Attributes
-        attribute "connectionStatus", "string"   // connected, disconnected, connecting, rate limited, error
-        attribute "lastEventTime", "string"      // Timestamp of last received event (legacy - formatted)
-        attribute "lastEventReceived", "string"  // ISO timestamp of last SSE event for health monitoring
-        attribute "rateLimitRemaining", "number" // Remaining API calls (from response headers)
-        attribute "rateLimitLimit", "number"     // Total API call limit (from response headers)
-        attribute "apiUrl", "string"             // Current API URL being used
-        attribute "driverVersion", "string"
-    }
-
-    preferences {
-        input name: "debugLogging", type: "bool", title: "Enable debug logging", defaultValue: false,
-              description: "Enable detailed logging for troubleshooting. Disable for normal operation."
-    }
-}
+definition(
+    name: 'Home Connect Integration v3',
+    namespace: 'craigde',
+    author: 'Craig Dewar',
+    description: 'Integrates Home Connect smart appliances with Hubitat (v3 architecture)',
+    category: 'My Apps',
+    iconUrl: '',
+    iconX2Url: '',
+    iconX3Url: ''
+)
 
 /* ===========================================================================================================
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
-@Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.0.3"
+@Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
+@Field static final String DEFAULT_LOG_LEVEL = "warn"
+@Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
+@Field static final String APP_VERSION = "3.0.9"
 
-// Reconnect timing constants
-@Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
-@Field static final Integer MAX_RECONNECT_ATTEMPTS = 10       // Give up after this many failed attempts
-@Field static final Integer RATE_LIMIT_BUFFER = 300           // 5 minute buffer after rate limit expires
+// OAuth endpoints
+@Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
+@Field static final String OAUTH_TOKEN_URL = 'https://api.home-connect.com/security/oauth/token'
+@Field static final String API_BASE_URL = 'https://api.home-connect.com'
 
-/**
- * Gets the API URL - can be overridden by parent app via z_setApiUrl
- */
-private String getApiUrl() {
-    return state.apiUrl ?: DEFAULT_API_URL
-}
+/* ===========================================================================================================
+   SETTINGS ACCESSORS
+   =========================================================================================================== */
+
+private getClientId()     { settings.clientId?.trim() }
+private getClientSecret() { settings.clientSecret?.trim() }
 
 /* ===========================================================================================================
    LIFECYCLE METHODS
    =========================================================================================================== */
 
 def installed() {
-    log.info "Home Connect Stream Driver v3 installed"
-    sendEvent(name: "driverVersion", value: DRIVER_VERSION)
-    sendEvent(name: "connectionStatus", value: "disconnected")
+    logInfo("Installing Home Connect Integration v3")
+    createStreamDriver()
+}
+
+def uninstalled() {
+    logInfo("Uninstalling Home Connect Integration v3")
+    deleteChildDevicesByDevices(getChildDevices())
 }
 
 def updated() {
-    log.info "Home Connect Stream Driver v3 updated"
-    sendEvent(name: "driverVersion", value: DRIVER_VERSION)
-}
-
-/**
- * Called when device is initialized or hub restarts
- * Automatically attempts to connect to Home Connect
- */
-def initialize() {
-    logDebug("Initializing - attempting to connect")
-    connect()
-}
-
-/**
- * Refreshes the connection by disconnecting and reconnecting
- */
-def refresh() {
-    logInfo("Refreshing connection")
-    disconnect()
-    pauseExecution(1000)
-    connect()
+    logInfo("Updating Home Connect Integration v3")
+    synchronizeDevices()
 }
 
 /* ===========================================================================================================
-   SSE CONNECTION MANAGEMENT
+   PREFERENCES PAGES
    =========================================================================================================== */
 
-/**
- * Establishes SSE connection to Home Connect event stream
- * Handles rate limiting, token validation, and connection setup
- */
-def connect() {
-    // Check if we're rate limited
-    if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
-        def rateLimitTime = state.rateLimitedUntilFormatted ?: formatDateTime(state.rateLimitedUntil)
-        logWarn("Cannot connect - rate limited until ${rateLimitTime}")
-        sendEvent(name: "connectionStatus", value: "rate limited until ${rateLimitTime}")
-        return
-    }
-    
-    // Clear expired rate limit state
-    if (state.rateLimitedUntil && now() >= state.rateLimitedUntil) {
-        state.rateLimitedUntil = null
-        state.rateLimitedUntilFormatted = null
-        state.reconnectAttempts = 0
-        logInfo("Rate limit expired - cleared")
-    }
-    
-    logDebug("Connecting to Home Connect event stream")
-    
-    def token = parent?.getOAuthToken()
-    if (!token) {
-        logError("No OAuth token available - cannot connect")
-        sendEvent(name: "connectionStatus", value: "error - no token")
-        return
-    }
-    
-    def language = parent?.getLanguage() ?: "en-US"
-    
-    try {
-        interfaces.eventStream.connect(
-            "${getApiUrl()}${ENDPOINT_APPLIANCES}/events",
-            [
-                rawData: true,
-                ignoreSSLIssues: true,
-                headers: [
-                    'Authorization': "Bearer ${token}",
-                    'Accept': 'text/event-stream',
-                    'Accept-Language': language
-                ]
-            ]
-        )
-        sendEvent(name: "connectionStatus", value: "connecting")
-        
-    } catch (Exception e) {
-        logError("Failed to connect: ${e.message}")
-        sendEvent(name: "connectionStatus", value: "error")
-    }
+preferences {
+    page(name: "pageIntro")
+    page(name: "pageAuthentication")
+    page(name: "pageDevices")
 }
 
 /**
- * Closes the SSE connection
+ * Introduction page - collects Home Connect developer credentials
  */
-def disconnect() {
-    logInfo("Disconnecting from Home Connect event stream")
-    try {
-        interfaces.eventStream.close()
-    } catch (Exception e) {
-        logWarn("Error during disconnect: ${e.message}")
+def pageIntro() {
+    logDebug("Showing Introduction Page")
+
+    def streamDriver = getStreamDriver()
+    def languages = streamDriver?.getSupportedLanguages() ?: getDefaultLanguages()
+    def countriesList = flattenLanguageMap(languages)
+
+    // Store selected region
+    if (region != null) {
+        atomicState.langCode = region
+        atomicState.countryCode = countriesList.find { it.key == region }?.value
     }
-    sendEvent(name: "connectionStatus", value: "disconnected")
-}
 
-/**
- * Clears rate limit state to allow manual reconnection
- * Use after rate limit has expired if auto-reconnect hasn't triggered
- */
-def clearRateLimit() {
-    logInfo("Clearing rate limit state manually")
-    state.rateLimitedUntil = null
-    state.rateLimitedUntilFormatted = null
-    state.reconnectAttempts = 0
-    sendEvent(name: "connectionStatus", value: "disconnected")
-}
+    return dynamicPage(
+        name: 'pageIntro',
+        title: 'Home Connect Integration v3',
+        nextPage: 'pageAuthentication',
+        install: false,
+        uninstall: true
+    ) {
+        section("Introduction") {
+            paragraph """\
+This application connects your Home Connect smart appliances to Hubitat.
 
-/* ===========================================================================================================
-   SSE EVENT HANDLING
-   =========================================================================================================== */
+<b>Before you begin:</b>
 
-/**
- * Called by Hubitat when SSE connection status changes
- * Handles reconnection logic with conservative timing to avoid rate limits
- *
- * Reconnect Strategy:
- * - Normal disconnect (connection was successful): Wait 5 minutes, then reconnect
- * - Failed connection (never connected): Exponential backoff (60s, 120s, 240s, max 300s)
- * - Rate limited: Schedule reconnect for when limit expires + 5 min buffer
- */
-def eventStreamStatus(String status) {
-    logDebug("Event stream status: ${status}")
-    
-    if (status.contains("START")) {
-        // Connection successful
-        sendEvent(name: "connectionStatus", value: "connected")
-        messageBuffer = ""
-        
-        state.connectionSucceeded = true
-        state.reconnectAttempts = 0
-        state.lastConnectTime = now()
-        
-        // Refresh device status if we were disconnected for more than 5 minutes
-        def previousDisconnectTime = state.lastDisconnectTime ?: 0
-        def disconnectedDuration = now() - previousDisconnectTime
-        
-        if (previousDisconnectTime > 0 && disconnectedDuration > 300000) {
-            logInfo("Was disconnected for ${(disconnectedDuration/1000).toInteger()}s - refreshing device status")
-            runIn(2, "notifyParentReconnected")
+1. Create an account at the <a href="https://developer.home-connect.com/" target="_blank">Home Connect Developer Portal</a>
+
+2. Create a new application with these settings:
+   • <b>Application ID:</b> hubitat-homeconnect-integration
+   • <b>OAuth Flow:</b> Authorization Code Grant Flow
+   • <b>Redirect URI:</b> ${getFullApiServerUrl()}/oauth/callback
+
+3. Copy your Client ID and Client Secret below
+
+4. <b>Important:</b> Wait approximately 30 minutes after creating the application before proceeding (Home Connect requires propagation time)
+"""
         }
-        
-    } else if (status.contains("STOP") || status.contains("ERROR")) {
-        // Connection lost
-        sendEvent(name: "connectionStatus", value: "disconnected")
-        state.lastDisconnectTime = now()
-        
-        // Don't reconnect if rate limited
-        if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
-            logWarn("Rate limited - not reconnecting")
-            return
+        section('Home Connect Developer Credentials') {
+            input name: 'clientId', title: 'Client ID', type: 'text', required: true
+            input name: 'clientSecret', title: 'Client Secret', type: 'text', required: true
         }
-        
-        // Determine reconnect strategy based on whether we successfully connected
-        if (state.connectionSucceeded) {
-            // Normal disconnect after successful connection - wait 5 minutes
-            // This is the typical idle timeout from Home Connect
-            state.connectionSucceeded = false
-            logDebug("Normal disconnect - scheduling reconnect in ${NORMAL_RECONNECT_DELAY}s")
-            runIn(NORMAL_RECONNECT_DELAY, "connect")
-        } else {
-            // Connection failed without ever succeeding - use exponential backoff
-            def attempts = (state.reconnectAttempts ?: 0) + 1
-            state.reconnectAttempts = attempts
-            
-            if (attempts > MAX_RECONNECT_ATTEMPTS) {
-                logError("Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached - giving up. Click 'Connect' to retry manually.")
-                sendEvent(name: "connectionStatus", value: "failed - manual reconnect required")
-                return
-            }
-            
-            // Exponential backoff: 60s, 120s, 240s, max 300s
-            def delay = Math.min(300, 60 * Math.pow(2, attempts - 1) as Integer)
-            logWarn("Connection failed - scheduling reconnect in ${delay}s (attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS})")
-            runIn(delay, "connect")
+        section('Region Selection') {
+            input name: 'region', title: 'Select your region', type: 'enum', options: countriesList, required: true,
+                  description: "This determines the language for appliance status messages"
+        }
+        section('Logging') {
+            input name: 'logLevel', title: 'Log Level', type: 'enum', options: LOG_LEVELS, 
+                  defaultValue: DEFAULT_LOG_LEVEL, required: false,
+                  description: "Set to 'debug' for troubleshooting, 'warn' for normal operation"
         }
     }
 }
 
 /**
- * Called by parent app after reconnection to refresh all device status
+ * Authentication page - handles OAuth flow with Home Connect
  */
-def notifyParentReconnected() {
-    logInfo("Notifying parent to refresh device status")
-    parent?.refreshAllDeviceStatus()
-}
+def pageAuthentication() {
+    logDebug("Showing Authentication Page")
 
-/**
- * Main entry point for SSE data
- * Called by Hubitat each time data arrives on the event stream
- * 
- * SSE Format:
- * -----------
- * event: STATUS
- * data: {"haId":"...", "items":[...]}
- * 
- * Data may arrive in fragments, so we buffer until we have complete messages
- */
-def parse(String text) {
-    if (!text) return
-    
-    // Ignore data if rate limited (prevents processing error responses)
-    if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
-        return
+    // Create Hubitat access token if not exists
+    if (!atomicState.accessToken) {
+        atomicState.accessToken = createAccessToken()
     }
-    
-    logDebug("Raw SSE data: ${text?.take(200)}${text?.length() > 200 ? '...' : ''}")
-    
-    // Update lastEventReceived timestamp on any incoming data
-    updateLastEventReceived()
-    
-    // Check for rate limit error in the stream
-    if (text.contains('"key": "429"') || text.contains('"key":"429"') || text.contains("rate limit")) {
-        handleRateLimitError(text)
-        return
-    }
-    
-    // Buffer incoming data (SSE messages may span multiple parse() calls)
-    messageBuffer += text
-    
-    // Process complete messages (SSE messages are separated by double newlines)
-    while (messageBuffer.contains("\n\n")) {
-        def idx = messageBuffer.indexOf("\n\n")
-        def message = messageBuffer.substring(0, idx)
-        messageBuffer = messageBuffer.substring(idx + 2)
-        processSSEMessage(message)
-    }
-    
-    // Also handle single data: lines for implementations that send them individually
-    if (text.startsWith("data:")) {
-        def payload = text.substring(5).trim()
-        if (payload && payload.startsWith("{")) {
-            processEventPayload(payload)
-        }
-    }
-}
 
-/**
- * Updates the lastEventReceived timestamp
- * Called only when actual SSE data arrives to track stream health
- * NOT called on connection attempts or API calls
- */
-private void updateLastEventReceived() {
-    def now = new Date()
-    // ISO 8601 format for programmatic use
-    sendEvent(name: "lastEventReceived", value: now.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
-    // Human-readable format (legacy attribute)
-    sendEvent(name: "lastEventTime", value: now.format("yyyy-MM-dd HH:mm:ss"))
-}
-
-/**
- * Handles rate limit (429) errors from the SSE stream
- * Extracts the retry time and schedules automatic reconnection
- */
-private void handleRateLimitError(String text) {
-    logError("Rate limit detected in SSE stream - stopping reconnects")
-    
-    // Extract seconds from error message (e.g., "...remaining period of 86400 seconds")
-    def matcher = text =~ /(\d+) seconds/
-    def backoffSeconds = 86400  // Default 24 hours if not found
-    if (matcher && matcher.size() > 0 && matcher[0].size() > 1) {
-        backoffSeconds = matcher[0][1].toInteger()
-    }
-    
-    def rateLimitUntil = now() + (backoffSeconds * 1000)
-    state.rateLimitedUntil = rateLimitUntil
-    state.reconnectAttempts = 0
-    
-    def rateLimitTime = formatDateTime(rateLimitUntil)
-    state.rateLimitedUntilFormatted = rateLimitTime
-    
-    sendEvent(name: "connectionStatus", value: "rate limited until ${rateLimitTime}")
-    sendEvent(name: "rateLimitRemaining", value: 0)
-    logError("Rate limited until ${rateLimitTime}")
-    
-    // Schedule automatic reconnect when rate limit expires (plus buffer)
-    def reconnectDelay = backoffSeconds + RATE_LIMIT_BUFFER
-    logInfo("Scheduling automatic reconnect in ${reconnectDelay} seconds (${formatDateTime(now() + reconnectDelay * 1000)})")
-    runIn(reconnectDelay, "connect")
-}
-
-/**
- * Processes a complete SSE message
- * Extracts event type and data payload, then routes to processEventPayload
- */
-private void processSSEMessage(String message) {
-    logDebug("Processing SSE message: ${message?.take(100)}${message?.length() > 100 ? '...' : ''}")
-    
-    String eventType = null
-    String dataPayload = null
-    
-    message.split("\n").each { line ->
-        if (line.startsWith("event:")) {
-            eventType = line.substring(6).trim()
-        } else if (line.startsWith("data:")) {
-            dataPayload = line.substring(5).trim()
-        }
-    }
-    
-    if (eventType && dataPayload) {
-        logDebug("Event type: ${eventType}")
-        processEventPayload(dataPayload, eventType)
-    } else if (dataPayload) {
-        processEventPayload(dataPayload)
-    }
-}
-
-/**
- * Processes the JSON payload from an SSE event
- * Routes events to the appropriate child device via the parent app
- *
- * Event Types:
- * - KEEP-ALIVE: Connection heartbeat (ignored)
- * - CONNECTED/DISCONNECTED: Appliance online status
- * - STATUS/EVENT/NOTIFY: Appliance state changes (routed to child)
- */
-private void processEventPayload(String payload, String eventType = null) {
-    if (!payload || !payload.startsWith("{")) return
-    
-    try {
-        def json = new JsonSlurper().parseText(payload)
-        
-        String haId = json.haId
-        if (!haId) {
-            logWarn("Event payload missing haId - ignoring")
-            return
-        }
-        
-        // Handle keep-alive (heartbeat)
-        if (eventType == "KEEP-ALIVE") {
-            logDebug("Keep-alive received for appliance ${haId}")
-            return
-        }
-        
-        // Handle appliance connection status
-        if (eventType == "DISCONNECTED" || eventType == "CONNECTED") {
-            logInfo("Appliance ${haId} is now ${eventType}")
-            parent?.handleApplianceConnectionEvent(haId, eventType)
-            return
-        }
-        
-        // Process status/event items and route to child device
-        def items = json.items
-        if (items instanceof List) {
-            items.each { item ->
-                def evt = [
-                    haId: haId,
-                    key: item.key,
-                    value: item.value,
-                    displayvalue: item.displayvalue ?: item.value?.toString(),
-                    unit: item.unit,
-                    eventType: eventType
-                ]
-                
-                logDebug("Routing event to child: ${item.key} = ${item.value}")
-                parent?.handleApplianceEvent(evt)
-            }
-        }
-        
-    } catch (Exception e) {
-        logError("Error parsing event payload: ${e.message}")
-    }
-}
-
-/* ===========================================================================================================
-   HOME CONNECT API - CORE HTTP METHODS
-   =========================================================================================================== */
-
-/**
- * Performs an HTTP GET request to the Home Connect API
- * Includes automatic token refresh on 401 errors
- *
- * @param path API endpoint path (e.g., "/api/homeappliances/{haId}/status")
- * @param closure Callback to receive the response data
- */
-def apiGet(String path, Closure closure) {
-    def token = parent?.getOAuthToken()
-    def language = parent?.getLanguage() ?: "en-US"
-    
-    if (!token) {
-        logError("No OAuth token for API GET")
-        return
-    }
-    
-    logDebug("API GET: ${path}")
-    
-    try {
-        httpGet(
-            uri: getApiUrl() + path,
-            contentType: "application/json",
-            headers: [
-                'Authorization': "Bearer ${token}",
-                'Accept-Language': language,
-                'Accept': "application/vnd.bsh.sdk.v1+json"
-            ]
-        ) { response ->
-            logDebug("API GET response status: ${response.status}")
-            
-            // Extract rate limit headers
-            extractRateLimitHeaders(response)
-            
-            if (response.data) {
-                closure(response.data)
-            }
-        }
-    } catch (groovyx.net.http.HttpResponseException e) {
-        handleHttpError("GET", path, e, closure)
-    } catch (Exception e) {
-        logError("API GET error: ${e.message} - path: ${path}")
-    }
-}
-
-/**
- * Performs an HTTP PUT request to the Home Connect API
- * Used for setting values (power state, programs, options)
- *
- * @param path API endpoint path
- * @param data Map of data to send in request body
- * @param closure Callback to receive the response data
- */
-def apiPut(String path, Map data, Closure closure) {
-    def token = parent?.getOAuthToken()
-    def language = parent?.getLanguage() ?: "en-US"
-    
-    if (!token) {
-        logError("No OAuth token for API PUT")
-        return
-    }
-    
-    // Check rate limit before making request
-    if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
-        logWarn("API PUT blocked - rate limited")
-        return
-    }
-    
-    String body = new JsonOutput().toJson(data)
-    logDebug("API PUT: ${path}")
-    
-    try {
-        httpPut(
-            uri: getApiUrl() + path,
-            contentType: "application/json",
-            requestContentType: "application/json",
-            body: body,
-            headers: [
-                'Authorization': "Bearer ${token}",
-                'Accept-Language': language,
-                'Accept': "application/vnd.bsh.sdk.v1+json"
-            ]
-        ) { response ->
-            logDebug("API PUT response status: ${response.status}")
-            
-            // Extract rate limit headers
-            extractRateLimitHeaders(response)
-            
-            if (response.data) {
-                closure(response.data)
-            }
-        }
-    } catch (groovyx.net.http.HttpResponseException e) {
-        handleHttpError("PUT", path, e, closure)
-    } catch (Exception e) {
-        logError("API PUT error: ${e.message} - path: ${path}")
-    }
-}
-
-/**
- * Performs an HTTP DELETE request to the Home Connect API
- * Used for stopping programs
- *
- * @param path API endpoint path
- * @param closure Callback to receive the response data
- */
-def apiDelete(String path, Closure closure) {
-    def token = parent?.getOAuthToken()
-    def language = parent?.getLanguage() ?: "en-US"
-    
-    if (!token) {
-        logError("No OAuth token for API DELETE")
-        return
-    }
-    
-    // Check rate limit before making request
-    if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
-        logWarn("API DELETE blocked - rate limited")
-        return
-    }
-    
-    logDebug("API DELETE: ${path}")
-    
-    try {
-        httpDelete(
-            uri: getApiUrl() + path,
-            contentType: "application/json",
-            requestContentType: "application/json",
-            headers: [
-                'Authorization': "Bearer ${token}",
-                'Accept-Language': language,
-                'Accept': "application/vnd.bsh.sdk.v1+json"
-            ]
-        ) { response ->
-            logDebug("API DELETE response status: ${response.status}")
-            
-            // Extract rate limit headers
-            extractRateLimitHeaders(response)
-            
-            if (response.data) {
-                closure(response.data)
-            }
-        }
-    } catch (groovyx.net.http.HttpResponseException e) {
-        handleHttpError("DELETE", path, e, closure)
-    } catch (Exception e) {
-        logError("API DELETE error: ${e.message} - path: ${path}")
-    }
-}
-
-/**
- * Extracts rate limit information from API response headers
- * Updates rateLimitRemaining and rateLimitLimit attributes
- *
- * Home Connect returns these headers on API responses:
- * - X-RateLimit-Limit: Total allowed calls (typically 1000)
- * - X-RateLimit-Remaining: Calls remaining in the current period
- */
-private void extractRateLimitHeaders(response) {
-    try {
-        def headers = response.getHeaders()
-        
-        // Try different header name formats (Home Connect uses X-RateLimit-*)
-        def remaining = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Remaining') }?.value
-        def limit = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Limit') }?.value
-        
-        if (remaining != null) {
-            def remainingInt = remaining.toString().toInteger()
-            sendEvent(name: "rateLimitRemaining", value: remainingInt)
-            logDebug("Rate limit remaining: ${remainingInt}")
-            
-            // Warn if getting low
-            if (remainingInt < 100) {
-                logWarn("Rate limit warning: only ${remainingInt} API calls remaining")
-            }
-        }
-        
-        if (limit != null) {
-            def limitInt = limit.toString().toInteger()
-            sendEvent(name: "rateLimitLimit", value: limitInt)
-            logDebug("Rate limit total: ${limitInt}")
-        }
-    } catch (Exception e) {
-        logDebug("Could not extract rate limit headers: ${e.message}")
-    }
-}
-
-/**
- * Handles HTTP errors from API calls
- * Implements retry logic for 401 (token expired) errors
- */
-private void handleHttpError(String method, String path, groovyx.net.http.HttpResponseException e, Closure closure) {
-    def statusCode = e.getStatusCode()
-    def responseData = e.getResponse()?.getData()
-    
-    // Try to extract rate limit headers even from error responses
-    try {
-        extractRateLimitHeaders(e.getResponse())
-    } catch (Exception ex) {
-        // Ignore - not all error responses have headers accessible
-    }
-    
-    switch (statusCode) {
-        case 401:
-            logWarn("API ${method} 401 Unauthorized - refreshing token")
-            if (parent?.refreshOAuthTokenAndRetry()) {
-                logInfo("Retrying API ${method} after token refresh")
-                // Retry based on method type
-                switch (method) {
-                    case "GET": apiGetRetry(path, closure); break
-                    case "PUT": logWarn("PUT retry not implemented - please retry manually"); break
-                    case "DELETE": apiDeleteRetry(path, closure); break
-                }
-            }
-            break
-            
-        case 404:
-            if (path.contains('programs/active')) {
-                // No active program - expected when appliance is idle
-                throw new Exception("No active program")
+    return dynamicPage(
+        name: 'pageAuthentication',
+        title: 'Home Connect Authentication',
+        nextPage: 'pageDevices',
+        install: false,
+        uninstall: false,
+        refreshInterval: 0
+    ) {
+        section() {
+            if (atomicState.oAuthAuthToken) {
+                showHideNextButton(true)
+                paragraph '<b>✓ Connected!</b> Your Home Connect account is linked. Press Next to continue.'
+                href url: generateOAuthUrl(), style: 'external', required: false,
+                     title: "Re-authenticate", description: "Tap to reconnect if needed"
             } else {
-                logWarn("API ${method} 404 Not Found: ${path}")
+                showHideNextButton(false)
+                paragraph 'Click the button below to connect your Home Connect account.'
+                href url: generateOAuthUrl(), style: 'external', required: false,
+                     title: "Connect to Home Connect", description: "Tap to authenticate"
             }
-            break
-            
-        case 409:
-            logWarn("API ${method} 409 Conflict - command cannot be executed in current state")
-            break
-            
-        case 429:
-            logError("API ${method} 429 Rate Limited")
-            sendEvent(name: "rateLimitRemaining", value: 0)
-            state.rateLimitedUntil = now() + 60000  // Back off for 1 minute
-            break
-            
-        case 503:
-            logWarn("API ${method} 503 Service Unavailable - appliance may be offline")
-            break
-            
-        default:
-            logError("API ${method} error ${statusCode}: ${responseData} - path: ${path}")
+        }
+        section("Debug Info") {
+            def cleanRedirectUri = getDisplayRedirectUrl()
+            def fullRedirectUri = getOAuthRedirectUrl()
+            paragraph "<b>Register this URL in Home Connect Developer Portal:</b>"
+            paragraph "<code style='word-break:break-all;'>${cleanRedirectUri}</code>"
+            paragraph "<small>Full redirect URI (with token): ${fullRedirectUri?.take(100)}...</small>"
+            paragraph "<small>Client ID length: ${getClientId()?.length() ?: 0} chars</small>"
+            paragraph "<small>Client Secret length: ${getClientSecret()?.length() ?: 0} chars</small>"
+            paragraph "<small>App Version: ${APP_VERSION}</small>"
+            if (atomicState.lastOAuthError) {
+                paragraph "<b style='color:red'>Last OAuth Error:</b> ${atomicState.lastOAuthError}"
+            }
+        }
     }
 }
 
 /**
- * Retry helper for GET requests after token refresh
+ * Device selection page - lists discovered appliances
  */
-private void apiGetRetry(String path, Closure closure) {
-    def token = parent?.getOAuthToken()
-    def language = parent?.getLanguage() ?: "en-US"
+def pageDevices() {
+    logDebug("Showing Devices Page")
     
-    if (!token) {
-        logError("No OAuth token for API GET retry")
-        return
+    def homeConnectDevices = fetchHomeConnectDevices()
+    
+    def deviceList = [:]
+    state.foundDevices = []
+
+    homeConnectDevices.each { appliance ->
+        deviceList << ["${appliance.haId}": "${appliance.name} (${appliance.type})"]
+        state.foundDevices << [haId: appliance.haId, name: appliance.name, type: appliance.type]
     }
+
+    return dynamicPage(
+        name: 'pageDevices',
+        title: 'Select Appliances',
+        install: true,
+        uninstall: true
+    ) {
+        section() {
+            if (deviceList.isEmpty()) {
+                paragraph '<b>No appliances found.</b> Make sure your appliances are registered in the Home Connect app.'
+            } else {
+                paragraph "Found ${deviceList.size()} appliance(s). Select the ones you want to control with Hubitat:"
+                input name: 'devices', title: 'Appliances', type: 'enum', required: true,
+                      multiple: true, options: deviceList
+            }
+        }
+    }
+}
+
+/**
+ * Fetches list of appliances from Home Connect API
+ */
+private List fetchHomeConnectDevices() {
+    def homeConnectDevices = []
     
     try {
+        def token = getOAuthToken()
+        def language = getLanguage()
+        
         httpGet(
-            uri: getApiUrl() + path,
+            uri: "${API_BASE_URL}/api/homeappliances",
             contentType: "application/json",
             headers: [
                 'Authorization': "Bearer ${token}",
@@ -750,204 +280,854 @@ private void apiGetRetry(String path, Closure closure) {
                 'Accept': "application/vnd.bsh.sdk.v1+json"
             ]
         ) { response ->
-            logDebug("API GET retry response: ${response.status}")
-            extractRateLimitHeaders(response)
-            if (response.data) {
-                closure(response.data)
+            if (response.data?.data?.homeappliances) {
+                homeConnectDevices = response.data.data.homeappliances
+                logDebug("Found ${homeConnectDevices.size()} appliance(s)")
             }
         }
     } catch (Exception e) {
-        logError("API GET retry failed: ${e.message}")
+        logError("Failed to fetch appliances: ${e.message}")
     }
+    
+    return homeConnectDevices
+}
+
+/* ===========================================================================================================
+   STREAM DRIVER MANAGEMENT
+   =========================================================================================================== */
+
+/**
+ * Gets the Stream Driver child device
+ */
+def getStreamDriver() {
+    return getChildDevice(STREAM_DRIVER_DNI)
 }
 
 /**
- * Retry helper for DELETE requests after token refresh
+ * Creates the Stream Driver if it doesn't exist
  */
-private void apiDeleteRetry(String path, Closure closure) {
-    def token = parent?.getOAuthToken()
-    def language = parent?.getLanguage() ?: "en-US"
-    
-    if (!token) {
-        logError("No OAuth token for API DELETE retry")
+private void createStreamDriver() {
+    def existing = getChildDevice(STREAM_DRIVER_DNI)
+    if (existing) {
+        logDebug("Stream Driver already exists")
         return
     }
     
+    logInfo("Creating Stream Driver")
     try {
-        httpDelete(
-            uri: getApiUrl() + path,
-            contentType: "application/json",
-            requestContentType: "application/json",
-            headers: [
-                'Authorization': "Bearer ${token}",
-                'Accept-Language': language,
-                'Accept': "application/vnd.bsh.sdk.v1+json"
-            ]
-        ) { response ->
-            logDebug("API DELETE retry response: ${response.status}")
-            extractRateLimitHeaders(response)
-            if (response.data) {
-                closure(response.data)
+        def driver = addChildDevice('craigde', 'Home Connect Stream Driver v3', STREAM_DRIVER_DNI)
+        driver.initialize()
+    } catch (Exception e) {
+        logError("Failed to create Stream Driver: ${e.message}")
+    }
+}
+
+/* ===========================================================================================================
+   DEVICE SYNCHRONIZATION
+   =========================================================================================================== */
+
+/**
+ * Converts Home Connect appliance ID to Hubitat device network ID
+ */
+private String homeConnectIdToDeviceNetworkId(String haId) {
+    return "HC3-${haId}"
+}
+
+/**
+ * Synchronizes child devices with selected appliances
+ * Creates new devices, removes deselected ones
+ */
+def synchronizeDevices() {
+    logDebug("Synchronizing devices")
+    
+    // Ensure stream driver exists
+    createStreamDriver()
+    
+    // If foundDevices is empty, we may need to fetch them again
+    // This can happen on first install due to timing
+    if (!state.foundDevices || state.foundDevices.isEmpty()) {
+        logDebug("foundDevices is empty - fetching appliance list")
+        def homeConnectDevices = fetchHomeConnectDevices()
+        state.foundDevices = homeConnectDevices.collect { appliance ->
+            [haId: appliance.haId, name: appliance.name, type: appliance.type]
+        }
+        logDebug("Populated foundDevices with ${state.foundDevices.size()} appliance(s)")
+    }
+    
+    def childDevices = getChildDevices()
+    def childrenMap = childDevices.collectEntries { [(it.deviceNetworkId): it] }
+    
+    // Don't touch the stream driver
+    childrenMap.remove(STREAM_DRIVER_DNI)
+
+    def newDevices = []
+    
+    // Create devices for newly selected appliances
+    for (homeConnectDeviceId in settings.devices) {
+        def hubitatDeviceId = homeConnectIdToDeviceNetworkId(homeConnectDeviceId)
+
+        if (childrenMap.containsKey(hubitatDeviceId)) {
+            // Device exists - remove from map so it won't be deleted
+            childrenMap.remove(hubitatDeviceId)
+            continue
+        }
+
+        // Create new device
+        def homeConnectDevice = state.foundDevices.find { it.haId == homeConnectDeviceId }
+        if (!homeConnectDevice) {
+            logWarn("Could not find device info for ${homeConnectDeviceId} - skipping")
+            continue
+        }
+
+        def device = createApplianceDevice(homeConnectDevice.type, hubitatDeviceId)
+        if (device) {
+            newDevices << device
+        }
+    }
+
+    // Remove devices that are no longer selected
+    deleteChildDevicesByDevices(childrenMap.values())
+    
+    // Start SSE connection
+    getStreamDriver()?.connect()
+    
+    // Initialize new devices after a short delay (allows SSE to connect)
+    if (newDevices) {
+        runIn(5, "initializeNewDevices", [data: [deviceIds: newDevices.collect { it.deviceNetworkId }]])
+    }
+}
+
+/**
+ * Initializes newly created devices - fetches status and available programs
+ */
+def initializeNewDevices(Map data) {
+    logInfo("Initializing ${data.deviceIds.size()} new device(s)")
+    
+    data.deviceIds.each { dni ->
+        def device = getChildDevice(dni)
+        if (device) {
+            logDebug("Initializing ${device.displayName}")
+            device.initialize()
+        }
+    }
+}
+
+/**
+ * Creates the appropriate child driver for an appliance type
+ */
+private def createApplianceDevice(String type, String dni) {
+    def driverName = getDriverNameForType(type)
+    
+    if (!driverName) {
+        logError("Unsupported appliance type: ${type}")
+        return null
+    }
+    
+    try {
+        logInfo("Creating ${driverName} device")
+        return addChildDevice('craigde', driverName, dni)
+    } catch (Exception e) {
+        logError("Failed to create ${driverName}: ${e.message}")
+        return null
+    }
+}
+
+/**
+ * Maps Home Connect appliance types to driver names
+ */
+private String getDriverNameForType(String type) {
+    def driverMap = [
+        "CleaningRobot": "Home Connect CleaningRobot v3",
+        "CoffeeMaker": "Home Connect CoffeeMaker v3",
+        "CookProcessor": "Home Connect CookProcessor v3",
+        "Cooktop": "Home Connect Cooktop v3",
+        "Dishwasher": "Home Connect Dishwasher v3",
+        "Dryer": "Home Connect Dryer v3",
+        "Freezer": "Home Connect FridgeFreezer v3",
+        "FridgeFreezer": "Home Connect FridgeFreezer v3",
+        "Hob": "Home Connect Cooktop v3",
+        "Hood": "Home Connect Hood v3",
+        "Oven": "Home Connect Oven v3",
+        "Refrigerator": "Home Connect FridgeFreezer v3",
+        "Washer": "Home Connect Washer v3",
+        "WasherDryer": "Home Connect WasherDryer v3",
+        "WarmingDrawer": "Home Connect WarmingDrawer v3",
+        "WineCooler": "Home Connect FridgeFreezer v3"
+    ]
+    
+    return driverMap[type]
+}
+
+/**
+ * Deletes a collection of child devices
+ */
+private void deleteChildDevicesByDevices(devices) {
+    for (d in devices) {
+        if (d.deviceNetworkId != STREAM_DRIVER_DNI) {
+            logInfo("Removing device: ${d.displayName}")
+            deleteChildDevice(d.deviceNetworkId)
+        }
+    }
+}
+
+/* ===========================================================================================================
+   EVENT ROUTING
+   =========================================================================================================== */
+
+/**
+ * Called by Stream Driver when an appliance event is received
+ * Routes the event to the appropriate child device
+ *
+ * @param evt Map containing: haId, key, value, displayvalue, unit, eventType
+ */
+def handleApplianceEvent(Map evt) {
+    if (!evt?.haId || !evt?.key) {
+        logWarn("handleApplianceEvent: missing haId or key")
+        return
+    }
+    
+    logDebug("Routing event: ${evt.key} = ${evt.value} for ${evt.haId}")
+
+    String childDni = "HC3-${evt.haId}"
+    def child = getChildDevice(childDni)
+    
+    if (!child) {
+        logDebug("No child device for haId ${evt.haId}")
+        return
+    }
+
+    try {
+        child.parseEvent(evt)
+    } catch (Exception e) {
+        logWarn("Error routing event to ${child.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Called by Stream Driver when an appliance connects/disconnects
+ */
+def handleApplianceConnectionEvent(String haId, String status) {
+    logDebug("Appliance ${haId} connection status: ${status}")
+    
+    String childDni = "HC3-${haId}"
+    def child = getChildDevice(childDni)
+    
+    if (child) {
+        try {
+            child.z_updateEventStreamStatus(status)
+        } catch (Exception e) {
+            // Method may not exist on all drivers
+        }
+    }
+}
+
+/**
+ * Called by Stream Driver after reconnecting to refresh all device status
+ */
+def refreshAllDeviceStatus() {
+    logInfo("Refreshing status for all devices after reconnect")
+    
+    getChildDevices().each { child ->
+        if (child.deviceNetworkId != STREAM_DRIVER_DNI) {
+            try {
+                // Use checkActiveProgram=false to minimize API calls
+                initializeStatus(child, false)
+            } catch (Exception e) {
+                logWarn("Failed to refresh ${child.displayName}: ${e.message}")
             }
         }
-    } catch (Exception e) {
-        logError("API DELETE retry failed: ${e.message}")
     }
 }
 
 /* ===========================================================================================================
-   HOME CONNECT API - APPLIANCE METHODS
+   API HELPERS - Called by child drivers
    =========================================================================================================== */
 
 /**
- * Retrieves list of all Home Connect appliances registered to the user
+ * Extracts the Home Connect appliance ID from a device network ID
  */
-def getHomeAppliances(Closure closure) {
-    logDebug("Retrieving all Home Appliances")
-    apiGet("${ENDPOINT_APPLIANCES}") { response ->
-        closure(response.data?.homeappliances ?: [])
+private String getHaIdFromDevice(device) {
+    return device.deviceNetworkId?.replaceFirst(/^HC3-/, "")
+}
+
+/**
+ * Initializes status for a device by fetching current state from Home Connect
+ *
+ * @param device The child device to initialize
+ * @param checkActiveProgram Whether to also fetch active program (set false to reduce API calls)
+ */
+def initializeStatus(device, boolean checkActiveProgram = true) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
+    if (!streamDriver) {
+        logError("Stream Driver not available")
+        return
+    }
+    
+    logDebug("Initializing status for ${haId}")
+
+    // Fetch current status
+    streamDriver.getStatus(haId) { status ->
+        device.z_parseStatus(JsonOutput.toJson(status))
+    }
+
+    // Fetch current settings
+    streamDriver.getSettings(haId) { settings ->
+        device.z_parseSettings(JsonOutput.toJson(settings))
+    }
+
+    // Optionally fetch active program
+    if (checkActiveProgram) {
+        try {
+            streamDriver.getActiveProgram(haId) { activeProgram ->
+                device.z_parseActiveProgram(JsonOutput.toJson(activeProgram))
+            }
+        } catch (Exception e) {
+            // No active program - this is normal when appliance is idle
+        }
     }
 }
 
 /**
- * Retrieves details for a specific appliance
+ * Starts a program on an appliance
  */
-def getHomeAppliance(String haId, Closure closure) {
-    logDebug("Retrieving appliance ${haId}")
-    apiGet("${ENDPOINT_APPLIANCES}/${haId}") { response ->
-        closure(response.data)
-    }
-}
-
-/* ===========================================================================================================
-   HOME CONNECT API - PROGRAM METHODS
-   =========================================================================================================== */
-
-/**
- * Gets list of available programs for an appliance
- */
-def getAvailablePrograms(String haId, Closure closure) {
-    logDebug("Retrieving available programs for ${haId}")
-    apiGet("${ENDPOINT_APPLIANCES}/${haId}/programs/available") { response ->
-        closure(response.data?.programs ?: [])
-    }
-}
-
-/**
- * Gets details for a specific available program (including options)
- */
-def getAvailableProgram(String haId, String programKey, Closure closure) {
-    logDebug("Retrieving program ${programKey} for ${haId}")
-    apiGet("${ENDPOINT_APPLIANCES}/${haId}/programs/available/${programKey}") { response ->
-        closure(response.data)
-    }
-}
-
-/**
- * Gets the currently active (running) program
- */
-def getActiveProgram(String haId, Closure closure) {
-    logDebug("Retrieving active program for ${haId}")
-    apiGet("${ENDPOINT_APPLIANCES}/${haId}/programs/active") { response ->
-        closure(response.data)
-    }
-}
-
-/**
- * Starts a program on the appliance
- * 
- * @param haId Appliance ID
- * @param programKey Program key (e.g., "Dishcare.Dishwasher.Program.Eco50")
- * @param options Optional program options
- */
-def setActiveProgram(String haId, String programKey, def options = "", Closure closure) {
-    def data = [key: programKey]
-    if (options != "") {
-        data.put("options", options)
-    }
+def startProgram(device, String programKey, def options = "") {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
     logInfo("Starting program ${programKey} on ${haId}")
-    apiPut("${ENDPOINT_APPLIANCES}/${haId}/programs/active", [data: data]) { response ->
-        closure(response.data)
+    
+    try {
+        streamDriver?.setActiveProgram(haId, programKey, options) { response ->
+            logDebug("startProgram response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Program started: ${programKey}")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to start program: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
 }
 
 /**
  * Stops the currently running program
  */
-def stopActiveProgram(String haId, Closure closure) {
+def stopProgram(device) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
     logInfo("Stopping program on ${haId}")
-    apiDelete("${ENDPOINT_APPLIANCES}/${haId}/programs/active") { response ->
-        closure(response.data)
+    
+    try {
+        streamDriver?.stopActiveProgram(haId) { response ->
+            logDebug("stopProgram response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Program stopped")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to stop program: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
 }
 
 /**
- * Gets the currently selected (but not started) program
+ * Sets the power state of an appliance
  */
-def getSelectedProgram(String haId, Closure closure) {
-    logDebug("Retrieving selected program for ${haId}")
-    apiGet("${ENDPOINT_APPLIANCES}/${haId}/programs/selected") { response ->
-        closure(response.data)
+def setPowerState(device, boolean state) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    def value = state ? "BSH.Common.EnumType.PowerState.On" : "BSH.Common.EnumType.PowerState.Off"
+    
+    logInfo("Setting power ${state ? 'ON' : 'OFF'} for ${haId}")
+    
+    try {
+        streamDriver?.setSetting(haId, "BSH.Common.Setting.PowerState", value) { response ->
+            logDebug("setPowerState response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Power ${state ? 'on' : 'off'}")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to set power state: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
 }
 
 /**
- * Sets the selected program (without starting it)
+ * Sets a setting value on an appliance
+ * Used for lighting, fan speed, and other configurable settings
+ *
+ * @param device The child device
+ * @param settingKey The setting key (e.g., "Cooking.Common.Setting.Lighting")
+ * @param value The value to set (boolean, integer, or string enum)
  */
-def setSelectedProgram(String haId, String programKey, def options = "", Closure closure) {
-    def data = [key: programKey]
-    if (options != "") {
-        data.put("options", options)
+def setSetting(device, String settingKey, def value) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
+    logDebug("Setting ${settingKey}=${value} on ${haId}")
+    
+    try {
+        streamDriver?.setSetting(haId, settingKey, value) { response ->
+            logDebug("setSetting response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Setting updated: ${settingKey}")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to set setting: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
+}
+
+/**
+ * Gets list of available programs for a device
+ * Some devices (Hob, FridgeFreezer) don't support programs - this handles that gracefully
+ */
+def getAvailableProgramList(device) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
+    logDebug("Fetching available programs for ${haId}")
+    
+    try {
+        streamDriver?.getAvailablePrograms(haId) { programs ->
+            if (programs) {
+                try {
+                    device.z_parseAvailablePrograms(JsonOutput.toJson(programs))
+                } catch (Exception e) {
+                    logDebug("Device doesn't support z_parseAvailablePrograms: ${e.message}")
+                }
+            } else {
+                logDebug("No programs available for ${haId} (device may not support programs)")
+            }
+        }
+    } catch (Exception e) {
+        // Device doesn't support programs - this is expected for some appliance types
+        logDebug("Cannot fetch programs for ${haId}: ${e.message}")
+    }
+}
+
+/**
+ * Gets available options for a specific program
+ */
+def getAvailableProgramOptionsList(device, String programKey) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
+    logDebug("Fetching options for program ${programKey} on ${haId}")
+    streamDriver?.getAvailableProgram(haId, programKey) { program ->
+        def optionsList = program?.options ?: []
+        try {
+            device.z_parseAvailableOptions(JsonOutput.toJson(optionsList))
+        } catch (Exception e) {
+            // Method may not exist
+        }
+    }
+}
+
+/**
+ * Sets the selected program (without starting)
+ */
+def setSelectedProgram(device, String programKey, def options = "") {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
     logDebug("Setting selected program ${programKey} on ${haId}")
-    apiPut("${ENDPOINT_APPLIANCES}/${haId}/programs/selected", [data: data]) { response ->
-        closure(response.data)
+    streamDriver?.setSelectedProgram(haId, programKey, options) { response ->
+        logDebug("setSelectedProgram response: ${response}")
     }
 }
 
 /**
  * Sets an option on the selected program
  */
-def setSelectedProgramOption(String haId, String optionKey, def optionValue, Closure closure) {
-    def data = [key: optionKey, value: optionValue]
-    logDebug("Setting program option ${optionKey}=${optionValue} on ${haId}")
-    apiPut("${ENDPOINT_APPLIANCES}/${haId}/programs/selected/options/${optionKey}", [data: data]) { response ->
-        closure(response.data)
+def setSelectedProgramOption(device, String optionKey, def optionValue) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
+    logDebug("Setting option ${optionKey}=${optionValue} on ${haId}")
+    streamDriver?.setSelectedProgramOption(haId, optionKey, optionValue) { response ->
+        logDebug("setSelectedProgramOption response: ${response}")
+    }
+}
+
+/**
+ * Sends a command to an appliance
+ */
+def sendCommand(device, String commandKey) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
+    logDebug("Sending command ${commandKey} to ${haId}")
+    
+    try {
+        streamDriver?.apiPut("/api/homeappliances/${haId}/commands/${commandKey}", [data: [key: commandKey]]) { response ->
+            logDebug("sendCommand response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Command sent: ${commandKey}")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to send command: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
 }
 
 /* ===========================================================================================================
-   HOME CONNECT API - STATUS & SETTINGS METHODS
+   OAUTH TOKEN MANAGEMENT
    =========================================================================================================== */
 
 /**
- * Gets current status of an appliance (operation state, door state, etc.)
+ * Gets a valid OAuth token, refreshing if necessary
+ * Called by Stream Driver for API requests
  */
-def getStatus(String haId, Closure closure) {
-    logDebug("Retrieving status for ${haId}")
-    apiGet("${ENDPOINT_APPLIANCES}/${haId}/status") { response ->
-        closure(response.data?.status ?: [])
+def getOAuthToken() {
+    // Refresh if token expires within 1 minute
+    if (now() >= (atomicState.oAuthTokenExpires ?: 0) - 60_000) {
+        refreshOAuthToken()
+    }
+    return atomicState.oAuthAuthToken
+}
+
+/**
+ * Called by Stream Driver when a 401 error occurs
+ * Forces token refresh and returns success status
+ */
+def refreshOAuthTokenAndRetry() {
+    logInfo("Forcing OAuth token refresh due to 401 error")
+    refreshOAuthToken()
+    return atomicState.oAuthAuthToken != null
+}
+
+/**
+ * Gets the configured language code
+ */
+def getLanguage() {
+    return atomicState.langCode ?: "en-US"
+}
+
+/* ===========================================================================================================
+   OAUTH AUTHENTICATION FLOW
+   =========================================================================================================== */
+
+// Map incoming OAuth callbacks to the handler method
+mappings {
+    path("/oauth/callback") { action: [GET: "oAuthCallback"] }
+}
+
+/**
+ * Generates the OAuth authorization URL
+ */
+private String generateOAuthUrl() {
+    def timestamp = now().toString()
+    def stateValue = generateSecureState(timestamp)
+    def redirectUri = getOAuthRedirectUrl()
+
+    logInfo("=== Generating OAuth Authorization URL ===")
+    logInfo("Client ID: ${getClientId()?.take(20)}... (${getClientId()?.length()} chars)")
+    logInfo("Redirect URI: ${redirectUri}")
+    logInfo("Redirect URI length: ${redirectUri?.length()} chars")
+    
+    def streamDriver = getStreamDriver()
+    
+    // Build query string manually if stream driver not available
+    def params = [
+        'client_id': getClientId(),
+        'redirect_uri': redirectUri,
+        'response_type': 'code',
+        'scope': 'IdentifyAppliance Monitor Settings Control',
+        'state': stateValue
+    ]
+    
+    def queryString = streamDriver?.toQueryString(params)
+    
+    if (!queryString) {
+        // Fallback if stream driver not available
+        queryString = params.collect { k, v -> 
+            "${URLEncoder.encode(k, 'UTF-8')}=${URLEncoder.encode(v?.toString() ?: '', 'UTF-8')}" 
+        }.join('&')
+        logDebug("Built query string manually (stream driver not available)")
+    }
+    
+    def fullUrl = "${OAUTH_AUTHORIZATION_URL}?${queryString}"
+    logInfo("Full OAuth URL length: ${fullUrl.length()} chars")
+    logDebug("Full OAuth URL: ${fullUrl.take(200)}...")
+    
+    return fullUrl
+}
+
+/**
+ * Generates a secure state value for OAuth CSRF protection
+ */
+private String generateSecureState(String timestamp) {
+    def message = "${timestamp}:${getClientId()}:${getClientSecret()}"
+    def hash = message.hashCode().toString()
+    def stateValue = "${timestamp}:${hash}"
+    return stateValue.bytes.encodeBase64().toString()
+}
+
+/**
+ * Validates the OAuth state value
+ */
+private boolean validateSecureState(String stateValue) {
+    try {
+        def decoded = new String(stateValue.decodeBase64())
+        def parts = decoded.split(':')
+
+        if (parts.length != 2) {
+            logError("Invalid OAuth state format")
+            return false
+        }
+
+        def timestamp = parts[0]
+        def receivedHash = parts[1]
+
+        // Check state age (max 10 minutes)
+        def stateAge = now() - timestamp.toLong()
+        if (stateAge < 0 || stateAge > 600000) {
+            logError("OAuth state expired: ${stateAge}ms old")
+            return false
+        }
+
+        // Verify hash
+        def message = "${timestamp}:${getClientId()}:${getClientSecret()}"
+        def expectedHash = message.hashCode().toString()
+        if (expectedHash != receivedHash) {
+            logError("OAuth state hash mismatch")
+            return false
+        }
+
+        return true
+    } catch (Exception e) {
+        logError("Error validating OAuth state: ${e.message}")
+        return false
     }
 }
 
 /**
- * Gets current settings of an appliance (power state, etc.)
+ * Gets the OAuth redirect URL for callbacks
+ * This is the URL that Home Connect will redirect to after authentication
  */
-def getSettings(String haId, Closure closure) {
-    logDebug("Retrieving settings for ${haId}")
-    apiGet("${ENDPOINT_APPLIANCES}/${haId}/settings") { response ->
-        closure(response.data?.settings ?: [])
+private String getOAuthRedirectUrl() {
+    return "${getFullApiServerUrl()}/oauth/callback?access_token=${atomicState.accessToken}"
+}
+
+/**
+ * Gets the clean redirect URL for display/registration (without access_token)
+ * Use THIS URL when registering in the Home Connect Developer Portal
+ */
+def getDisplayRedirectUrl() {
+    return "${getFullApiServerUrl()}/oauth/callback"
+}
+
+/**
+ * Handles the OAuth callback from Home Connect
+ */
+def oAuthCallback() {
+    // Log immediately on entry - before any processing
+    log.info "${app.name}: === OAuth Callback Entry Point ==="
+    log.info "${app.name}: Request received at ${new Date()}"
+    log.info "${app.name}: Raw params: ${params}"
+    
+    logInfo("=== OAuth Callback Received ===")
+    logDebug("All params: ${params}")
+
+    def code = params.code
+    def oAuthState = params.state
+    def error = params.error
+    def errorDescription = params.error_description
+
+    // Log what we received
+    logInfo("code present: ${code ? 'YES (' + code.take(20) + '...)' : 'NO'}")
+    logInfo("state present: ${oAuthState ? 'YES' : 'NO'}")
+    logInfo("error present: ${error ? 'YES: ' + error : 'NO'}")
+    if (errorDescription) logInfo("error_description: ${errorDescription}")
+
+    // Check for error from Home Connect
+    if (error) {
+        logError("OAuth error from Home Connect: ${error} - ${errorDescription}")
+        atomicState.lastOAuthError = "${error}: ${errorDescription}"
+        return renderOAuthFailure("${error}: ${errorDescription}")
+    }
+
+    if (!code) {
+        logError("No authorization code in OAuth callback")
+        logError("Params received: ${params.keySet()}")
+        atomicState.lastOAuthError = "No authorization code received"
+        return renderOAuthFailure("No authorization code received")
+    }
+
+    logDebug("Received authorization code: ${code?.take(20)}...")
+
+    if (!oAuthState) {
+        logError("No state parameter in callback")
+        atomicState.lastOAuthError = "No state parameter - possible redirect issue"
+        return renderOAuthFailure("No state parameter received")
+    }
+    
+    if (!validateSecureState(oAuthState)) {
+        logError("Invalid OAuth state in callback")
+        atomicState.lastOAuthError = "Invalid state - possible CSRF attack or expired link"
+        return renderOAuthFailure("Invalid state parameter")
+    }
+
+    // Clear any existing tokens
+    atomicState.oAuthRefreshToken = null
+    atomicState.oAuthAuthToken = null
+    atomicState.oAuthTokenExpires = null
+    atomicState.lastOAuthError = null
+
+    // Exchange code for tokens
+    def success = acquireOAuthToken(code)
+
+    if (!success || !atomicState.oAuthAuthToken) {
+        logError("Failed to acquire OAuth token")
+        return renderOAuthFailure(atomicState.lastOAuthError ?: "Failed to exchange code for token")
+    }
+
+    logInfo("OAuth authentication successful")
+    return renderOAuthSuccess()
+}
+
+/**
+ * Exchanges authorization code for access token
+ * Returns true on success, false on failure
+ */
+private boolean acquireOAuthToken(String code) {
+    logInfo("=== Acquiring OAuth Token ===")
+    
+    def redirectUri = getOAuthRedirectUrl()
+    
+    def body = [
+        'grant_type': 'authorization_code',
+        'code': code,
+        'client_id': getClientId(),
+        'client_secret': getClientSecret(),
+        'redirect_uri': redirectUri
+    ]
+    
+    // Log what we're sending (mask secrets)
+    logDebug("Token request to: ${OAUTH_TOKEN_URL}")
+    logDebug("Token request body:")
+    logDebug("  grant_type: authorization_code")
+    logDebug("  code: ${code?.take(20)}...")
+    logDebug("  client_id: ${getClientId()?.take(20)}... (${getClientId()?.length()} chars)")
+    logDebug("  client_secret: [MASKED] (${getClientSecret()?.length()} chars)")
+    logDebug("  redirect_uri: ${redirectUri}")
+    
+    return apiRequestAccessToken(body)
+}
+
+/**
+ * Refreshes the OAuth access token
+ */
+private void refreshOAuthToken() {
+    logDebug("Refreshing OAuth token")
+    
+    if (!atomicState.oAuthRefreshToken) {
+        logError("No refresh token available")
+        return
+    }
+    
+    apiRequestAccessToken([
+        'grant_type': 'refresh_token',
+        'refresh_token': atomicState.oAuthRefreshToken,
+        'client_secret': getClientSecret()
+    ])
+}
+
+/**
+ * Makes the OAuth token request
+ * Returns true on success, false on failure
+ */
+private boolean apiRequestAccessToken(Map body) {
+    try {
+        def success = false
+        
+        httpPost(
+            uri: OAUTH_TOKEN_URL, 
+            requestContentType: 'application/x-www-form-urlencoded', 
+            body: body
+        ) { response ->
+            logDebug("Token response status: ${response.status}")
+            
+            if (response?.data && response.success) {
+                atomicState.oAuthRefreshToken = response.data.refresh_token
+                atomicState.oAuthAuthToken = response.data.access_token
+                atomicState.oAuthTokenExpires = now() + (response.data.expires_in * 1000)
+                logInfo("OAuth token acquired successfully, expires in ${response.data.expires_in}s")
+                success = true
+            } else {
+                logError("Token response unsuccessful: ${response.data}")
+                atomicState.lastOAuthError = "Token response unsuccessful"
+            }
+        }
+        
+        return success
+        
+    } catch (groovyx.net.http.HttpResponseException e) {
+        def statusCode = e.getStatusCode()
+        def responseBody = e.getResponse()?.getData()
+        
+        logError("=== OAuth Token Error ===")
+        logError("HTTP Status: ${statusCode}")
+        logError("Response: ${responseBody}")
+        
+        // Parse error details if JSON
+        try {
+            if (responseBody instanceof Map) {
+                atomicState.lastOAuthError = "${responseBody.error}: ${responseBody.error_description}"
+                logError("Error: ${responseBody.error}")
+                logError("Description: ${responseBody.error_description}")
+            } else {
+                atomicState.lastOAuthError = "HTTP ${statusCode}: ${responseBody}"
+            }
+        } catch (Exception parseEx) {
+            atomicState.lastOAuthError = "HTTP ${statusCode}"
+        }
+        
+        return false
+        
+    } catch (Exception e) {
+        logError("Token request exception: ${e.class.name}: ${e.message}")
+        atomicState.lastOAuthError = e.message
+        return false
     }
 }
 
 /**
- * Sets a setting on an appliance (e.g., power state)
+ * Renders success page after OAuth
  */
-def setSetting(String haId, String settingKey, def value, Closure closure) {
-    logInfo("Setting ${settingKey}=${value} on ${haId}")
-    apiPut("${ENDPOINT_APPLIANCES}/${haId}/settings/${settingKey}", [data: [key: settingKey, value: value]]) { response ->
-        closure(response.data)
-    }
+private def renderOAuthSuccess() {
+    render contentType: 'text/html', data: '''
+    <html>
+    <head><title>Success</title></head>
+    <body style="font-family: sans-serif; padding: 20px;">
+        <h2>✓ Connected!</h2>
+        <p>Your Home Connect account is now linked to Hubitat.</p>
+        <p>You can close this window and continue setup.</p>
+    </body>
+    </html>
+    '''
+}
+
+/**
+ * Renders failure page after OAuth error
+ */
+private def renderOAuthFailure(String errorMessage = null) {
+    def errorHtml = errorMessage ? "<p><b>Error:</b> ${errorMessage}</p>" : ""
+    
+    render contentType: 'text/html', data: """
+    <html>
+    <head><title>Error</title></head>
+    <body style="font-family: sans-serif; padding: 20px;">
+        <h2>✗ Connection Failed</h2>
+        <p>Unable to connect to Home Connect.</p>
+        ${errorHtml}
+        <p>Please check the following:</p>
+        <ul>
+            <li>Client ID and Client Secret are correct (no extra spaces)</li>
+            <li>The Redirect URI in Home Connect Developer Portal matches exactly</li>
+            <li>You waited 30+ minutes after creating the application</li>
+        </ul>
+        <p>Check the Hubitat logs for more details.</p>
+    </body>
+    </html>
+    """
 }
 
 /* ===========================================================================================================
@@ -955,76 +1135,20 @@ def setSetting(String haId, String settingKey, def value, Closure closure) {
    =========================================================================================================== */
 
 /**
- * Converts a map to a URL query string
+ * Shows or hides the Next button on preference pages
  */
-def toQueryString(Map m) {
-    return m.collect { k, v -> "${k}=${new URI(null, null, v.toString(), null)}" }.sort().join("&")
+private void showHideNextButton(boolean show) {
+    if (show) {
+        paragraph "<script>if(typeof jQuery !== 'undefined'){\$('button[name=\"_action_next\"]').show();}</script>"
+    } else {
+        paragraph "<script>if(typeof jQuery !== 'undefined'){\$('button[name=\"_action_next\"]').hide();}</script>"
+    }
 }
 
 /**
- * Converts seconds to HH:MM format
+ * Flattens nested language map for dropdown selection
  */
-def convertSecondsToTime(Integer sec) {
-    if (!sec || sec <= 0) return "00:00"
-    long hours = java.util.concurrent.TimeUnit.SECONDS.toHours(sec)
-    long minutes = java.util.concurrent.TimeUnit.SECONDS.toMinutes(sec) % 60
-    return String.format("%02d:%02d", hours, minutes)
-}
-
-/**
- * Extracts the last segment from a dotted enum value
- * e.g., "BSH.Common.EnumType.PowerState.On" → "On"
- */
-def extractEnumValue(String full) {
-    if (!full) return null
-    return full.substring(full.lastIndexOf(".") + 1)
-}
-
-/**
- * Formats a timestamp as human-readable date/time
- */
-private String formatDateTime(Long timestamp) {
-    def date = new Date(timestamp)
-    return date.format("yyyy-MM-dd h:mm a", location?.timeZone ?: TimeZone.getDefault())
-}
-
-/**
- * Returns map of supported Home Connect languages/regions
- */
-def getSupportedLanguages() {
-    return [
-        "Bulgarian": ["Bulgaria": "bg-BG"],
-        "Chinese (Simplified)": ["China": "zh-CN", "Hong Kong": "zh-HK", "Taiwan": "zh-TW"],
-        "Czech": ["Czech Republic": "cs-CZ"],
-        "Danish": ["Denmark": "da-DK"],
-        "Dutch": ["Belgium": "nl-BE", "Netherlands": "nl-NL"],
-        "English": ["Australia": "en-AU", "Canada": "en-CA", "India": "en-IN", "New Zealand": "en-NZ", 
-                    "Singapore": "en-SG", "South Africa": "en-ZA", "United Kingdom": "en-GB", "United States": "en-US"],
-        "Finnish": ["Finland": "fi-FI"],
-        "French": ["Belgium": "fr-BE", "Canada": "fr-CA", "France": "fr-FR", "Luxembourg": "fr-LU", "Switzerland": "fr-CH"],
-        "German": ["Austria": "de-AT", "Germany": "de-DE", "Luxembourg": "de-LU", "Switzerland": "de-CH"],
-        "Greek": ["Greece": "el-GR"],
-        "Hungarian": ["Hungary": "hu-HU"],
-        "Italian": ["Italy": "it-IT", "Switzerland": "it-CH"],
-        "Norwegian": ["Norway": "nb-NO"],
-        "Polish": ["Poland": "pl-PL"],
-        "Portuguese": ["Portugal": "pt-PT"],
-        "Romanian": ["Romania": "ro-RO"],
-        "Russian": ["Russian Federation": "ru-RU"],
-        "Serbian": ["Serbia": "sr-SR"],
-        "Slovak": ["Slovakia": "sk-SK"],
-        "Slovenian": ["Slovenia": "sl-SI"],
-        "Spanish": ["Chile": "es-CL", "Peru": "es-PE", "Spain": "es-ES"],
-        "Swedish": ["Sweden": "sv-SE"],
-        "Turkish": ["Turkey": "tr-TR"],
-        "Ukrainian": ["Ukraine": "uk-UA"]
-    ]
-}
-
-/**
- * Flattens the language map for use in preference dropdowns
- */
-def toFlattenedLanguageMap(Map m) {
+private Map flattenLanguageMap(Map m) {
     return m.collectEntries { k, v ->
         def flattened = [:]
         if (v instanceof Map) {
@@ -1038,48 +1162,38 @@ def toFlattenedLanguageMap(Map m) {
     }
 }
 
+/**
+ * Returns default language options if Stream Driver isn't available
+ */
+private Map getDefaultLanguages() {
+    return [
+        "English": ["United States": "en-US", "United Kingdom": "en-GB"],
+        "German": ["Germany": "de-DE"]
+    ]
+}
+
 /* ===========================================================================================================
    LOGGING METHODS
    =========================================================================================================== */
 
-/**
- * Internal command for logging (z_ prefix convention)
- * Can be called from other components if needed
- */
-def z_deviceLog(String level, String msg) {
-    switch (level) {
-        case "debug": logDebug(msg); break
-        case "info": logInfo(msg); break
-        case "warn": logWarn(msg); break
-        case "error": logError(msg); break
-        default: log.info "Home Connect Stream: ${msg}"
-    }
-}
-
-/**
- * Sets the API URL to use for Home Connect calls
- * Called by parent app - allows different apps to use different endpoints (production vs simulator)
- */
-def z_setApiUrl(String url) {
-    state.apiUrl = url
-    sendEvent(name: "apiUrl", value: url)
-    logInfo("API URL set to: ${url}")
-}
-
 private void logDebug(String msg) {
-    if (debugLogging) {
-        log.debug "Home Connect Stream: ${msg}"
+    if (LOG_LEVELS.indexOf("debug") <= LOG_LEVELS.indexOf(logLevel ?: DEFAULT_LOG_LEVEL)) {
+        log.debug "${app.name}: ${msg}"
     }
 }
 
 private void logInfo(String msg) {
-    log.info "Home Connect Stream: ${msg}"
+    if (LOG_LEVELS.indexOf("info") <= LOG_LEVELS.indexOf(logLevel ?: DEFAULT_LOG_LEVEL)) {
+        log.info "${app.name}: ${msg}"
+    }
 }
 
 private void logWarn(String msg) {
-    log.warn "Home Connect Stream: ${msg}"
+    if (LOG_LEVELS.indexOf("warn") <= LOG_LEVELS.indexOf(logLevel ?: DEFAULT_LOG_LEVEL)) {
+        log.warn "${app.name}: ${msg}"
+    }
 }
 
 private void logError(String msg) {
-    log.error "Home Connect Stream: ${msg}"
+    log.error "${app.name}: ${msg}"
 }
