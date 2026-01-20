@@ -53,6 +53,8 @@
  *  3.0.8  2026-01-16  More granular OAuth debugging - logs on callback entry point
  *                     Added OAuth URL length logging to detect truncation
  *                     Direct log.info calls in callback to bypass log level filtering
+ *  3.0.9  2026-01-20  Added setSetting() method for Hood lighting/fan control
+ *                     Enables child drivers to set appliance settings via API
  */
 
 import groovy.json.JsonSlurper
@@ -77,7 +79,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.0.8"
+@Field static final String APP_VERSION = "3.0.9"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -644,6 +646,31 @@ def setPowerState(device, boolean state) {
         }
     } catch (Exception e) {
         logWarn("Failed to set power state: ${e.message}")
+        device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
+    }
+}
+
+/**
+ * Sets a setting value on an appliance
+ * Used for lighting, fan speed, and other configurable settings
+ *
+ * @param device The child device
+ * @param settingKey The setting key (e.g., "Cooking.Common.Setting.Lighting")
+ * @param value The value to set (boolean, integer, or string enum)
+ */
+def setSetting(device, String settingKey, def value) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+    
+    logDebug("Setting ${settingKey}=${value} on ${haId}")
+    
+    try {
+        streamDriver?.setSetting(haId, settingKey, value) { response ->
+            logDebug("setSetting response: ${response}")
+            device.sendEvent(name: "lastCommandStatus", value: "Setting updated: ${settingKey}")
+        }
+    } catch (Exception e) {
+        logWarn("Failed to set setting: ${e.message}")
         device.sendEvent(name: "lastCommandStatus", value: "Failed: ${e.message}")
     }
 }
