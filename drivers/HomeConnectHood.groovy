@@ -578,31 +578,57 @@ def setPower(String powerState) {
 }
 
 // =============================================================================
+// JSON PARSING HELPER
+// =============================================================================
+
+/**
+ * Safely parses JSON with error handling
+ * @param json JSON string to parse
+ * @param defaultValue Value to return on parse failure (default: null)
+ * @return Parsed object or defaultValue on error
+ */
+private def safeJsonParse(String json, def defaultValue = null) {
+    try {
+        return new JsonSlurper().parseText(json)
+    } catch (Exception e) {
+        logError("JSON parse error: ${e.message}")
+        logDebug("Failed JSON: ${json?.take(200)}")
+        return defaultValue
+    }
+}
+
+// =============================================================================
 // INTERNAL COMMANDS (z_ prefix)
 // =============================================================================
 
 def z_parseStatus(String json) {
     logDebug("Parsing status")
     logTrace("Status JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseSettings(String json) {
     logDebug("Parsing settings")
     logTrace("Settings JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseAvailablePrograms(String json) {
     logDebug("Parsing available programs")
     logTrace("Programs JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    
+    def list = safeJsonParse(json, [])
+
+    if (!list) return
+
     def programNames = list.collect { it.name ?: extractEnum(it.key) }
     state.programNames = programNames
-    
+
     logInfo("Found ${programNames.size()} available programs: ${programNames.join(', ')}")
     sendEvent(name: "availableProgramsList", value: programNames.join(", "))
 }
@@ -615,7 +641,9 @@ def z_parseAvailableOptions(String json) {
 def z_parseActiveProgram(String json) {
     logDebug("Parsing active program")
     logTrace("Active program JSON: ${json}")
-    def obj = new JsonSlurper().parseText(json)
+    def obj = safeJsonParse(json, [:])
+
+    if (!obj) return
 
     def name = obj?.name ?: obj?.data?.name ?: extractEnum(obj?.key ?: obj?.data?.key)
     if (name) {

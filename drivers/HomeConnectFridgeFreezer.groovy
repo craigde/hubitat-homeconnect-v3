@@ -523,21 +523,45 @@ def setPower(String powerState) {
 }
 
 // =============================================================================
+// JSON PARSING HELPER
+// =============================================================================
+
+/**
+ * Safely parses JSON with error handling
+ * @param json JSON string to parse
+ * @param defaultValue Value to return on parse failure (default: null)
+ * @return Parsed object or defaultValue on error
+ */
+private def safeJsonParse(String json, def defaultValue = null) {
+    try {
+        return new JsonSlurper().parseText(json)
+    } catch (Exception e) {
+        logError("JSON parse error: ${e.message}")
+        logDebug("Failed JSON: ${json?.take(200)}")
+        return defaultValue
+    }
+}
+
+// =============================================================================
 // INTERNAL COMMANDS (z_ prefix)
 // =============================================================================
 
 def z_parseStatus(String json) {
     logDebug("Parsing status")
     logTrace("Status JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseSettings(String json) {
     logDebug("Parsing settings")
     logTrace("Settings JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseAvailablePrograms(String json) {
