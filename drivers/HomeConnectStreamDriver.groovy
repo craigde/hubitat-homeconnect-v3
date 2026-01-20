@@ -376,7 +376,10 @@ private void handleRateLimitError(String text) {
     
     // Extract seconds from error message (e.g., "...remaining period of 86400 seconds")
     def matcher = text =~ /(\d+) seconds/
-    def backoffSeconds = matcher ? matcher[0][1].toInteger() : 86400  // Default 24 hours if not found
+    def backoffSeconds = 86400  // Default 24 hours if not found
+    if (matcher && matcher.size() > 0 && matcher[0].size() > 1) {
+        backoffSeconds = matcher[0][1].toInteger()
+    }
     
     def rateLimitUntil = now() + (backoffSeconds * 1000)
     state.rateLimitedUntil = rateLimitUntil
