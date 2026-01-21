@@ -567,19 +567,31 @@ def initializeStatus(device, boolean checkActiveProgram = true) {
 
     // Fetch current status
     streamDriver.getStatus(haId) { status ->
-        device.z_parseStatus(JsonOutput.toJson(status))
+        if (status != null) {
+            device.z_parseStatus(JsonOutput.toJson(status))
+        } else {
+            logWarn("Received null status for device ${haId}")
+        }
     }
 
     // Fetch current settings
     streamDriver.getSettings(haId) { settings ->
-        device.z_parseSettings(JsonOutput.toJson(settings))
+        if (settings != null) {
+            device.z_parseSettings(JsonOutput.toJson(settings))
+        } else {
+            logWarn("Received null settings for device ${haId}")
+        }
     }
 
     // Optionally fetch active program
     if (checkActiveProgram) {
         try {
             streamDriver.getActiveProgram(haId) { activeProgram ->
-                device.z_parseActiveProgram(JsonOutput.toJson(activeProgram))
+                if (activeProgram != null) {
+                    device.z_parseActiveProgram(JsonOutput.toJson(activeProgram))
+                } else {
+                    logDebug("No active program for device ${haId}")
+                }
             }
         } catch (Exception e) {
             // No active program - this is normal when appliance is idle
