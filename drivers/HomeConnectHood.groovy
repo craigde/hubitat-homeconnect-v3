@@ -36,6 +36,8 @@
  *  ----------------
  *  3.0.0  2026-01-14  Initial v3 architecture with parseEvent() pattern
  *  3.0.1  2026-01-14  Enhanced debugging for remote troubleshooting
+ *  3.0.2  2026-01-20  Added elapsed program time handling
+ *                     Added remaining program time handling
  */
 
 import groovy.json.JsonSlurper
@@ -155,11 +157,15 @@ metadata {
         attribute "level", "number"
 
         // =====================================================================
-        // ATTRIBUTES - Programs
+        // ATTRIBUTES - Programs & Timing
         // =====================================================================
         
         attribute "activeProgram", "string"
         attribute "selectedProgram", "string"
+        attribute "elapsedProgramTime", "number"
+        attribute "elapsedProgramTimeFormatted", "string"
+        attribute "remainingProgramTime", "number"
+        attribute "remainingProgramTimeFormatted", "string"
         attribute "delayedShutOffRemaining", "number"
         attribute "delayedShutOffRemainingFormatted", "string"
 
@@ -223,7 +229,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.0.1"
+@Field static final String DRIVER_VERSION = "3.0.2"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map FAN_SPEEDS = [
@@ -731,6 +737,11 @@ def parseEvent(Map evt) {
         case "BSH.Common.Status.OperationState":
             def opState = extractEnum(evt.value)
             sendEvent(name: "operationState", value: opState)
+            
+            // Reset timing when program ends
+            if (opState in ["Ready", "Inactive", "Finished"]) {
+                resetProgramState()
+            }
             updateDerivedState()
             updateJsonState()
             break
@@ -751,6 +762,22 @@ def parseEvent(Map evt) {
             def power = extractEnum(evt.value)
             sendEvent(name: "powerState", value: power)
             updateJsonState()
+            break
+
+        // ===== Program Timing =====
+        case "BSH.Common.Option.ElapsedProgramTime":
+            Integer sec = evt.value as Integer
+            sendEvent(name: "elapsedProgramTime", value: sec)
+            sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(sec))
+            break
+
+        case "BSH.Common.Option.RemainingProgramTime":
+            Integer sec = safeToInteger(evt.value)
+            sendEvent(name: "remainingProgramTime", value: sec)
+            sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(sec))
+            // Also update delayed shut-off remaining for compatibility
+            sendEvent(name: "delayedShutOffRemaining", value: sec)
+            sendEvent(name: "delayedShutOffRemainingFormatted", value: secondsToTime(sec))
             break
 
         case "Cooking.Hood.Setting.VentingLevel":
@@ -817,12 +844,6 @@ def parseEvent(Map evt) {
             sendEvent(name: "selectedProgram", value: evt.displayvalue ?: extractEnum(evt.value))
             break
 
-        case "BSH.Common.Option.RemainingProgramTime":
-            Integer sec = safeToInteger(evt.value)
-            sendEvent(name: "delayedShutOffRemaining", value: sec)
-            sendEvent(name: "delayedShutOffRemainingFormatted", value: secondsToTime(sec))
-            break
-
         case ~/Cooking\.Hood\.Setting\..*/:
             def attr = evt.key.split("\\.").last()
             sendEvent(name: attr, value: evt.value.toString())
@@ -840,6 +861,23 @@ def parseEvent(Map evt) {
                 logInfo("UNHANDLED SIGNIFICANT EVENT: ${evt.key} = ${evt.value} - Please report this")
             }
     }
+}
+
+// =============================================================================
+// TIMING HELPERS
+// =============================================================================
+
+/**
+ * Resets all program-related timing state when a program ends
+ */
+private void resetProgramState() {
+    logDebug("Resetting program state")
+    sendEvent(name: "elapsedProgramTime", value: 0)
+    sendEvent(name: "elapsedProgramTimeFormatted", value: "00:00")
+    sendEvent(name: "remainingProgramTime", value: 0)
+    sendEvent(name: "remainingProgramTimeFormatted", value: "00:00")
+    sendEvent(name: "delayedShutOffRemaining", value: 0)
+    sendEvent(name: "delayedShutOffRemainingFormatted", value: "00:00")
 }
 
 // =============================================================================
@@ -894,6 +932,8 @@ private void updateJsonState() {
             ambientLightBrightness: device.currentValue("ambientLightBrightness"),
             ambientLightColor: device.currentValue("ambientLightColor"),
             activeProgram: device.currentValue("activeProgram"),
+            elapsedProgramTime: device.currentValue("elapsedProgramTime"),
+            remainingProgramTime: device.currentValue("remainingProgramTime"),
             delayedShutOffRemaining: device.currentValue("delayedShutOffRemaining"),
             remoteControlStartAllowed: device.currentValue("remoteControlStartAllowed"),
             lastUpdate: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
