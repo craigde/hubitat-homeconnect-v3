@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.2.5",
+  "version": "3.2.6",
   "minimumHEVersion": "2.3.0",
   "dateReleased": "2026-01-15",
   "licenseFile": "",
-  "releaseNotes": "v3.2.5 - Hardened code with comprehensive error handling and input validation",
+  "releaseNotes": "v3.2.6 - Hardened code with comprehensive error handling and input validation",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "",
   "apps": [
