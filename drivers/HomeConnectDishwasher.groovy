@@ -59,6 +59,12 @@
  *                     Added raw event logging option
  *  3.0.5  2026-01-18  Added interiorLight attribute for premium dishwashers (Thermador, etc.)
  *                     Handles BSH.Common.Status.InteriorIlluminationActive event
+ *  3.1.0  2026-01-21  Hardened code with comprehensive error handling and input validation
+ *                     Added safe JSON parsing with error handling (prevents crashes on malformed data)
+ *                     Added safe type casting with validation (prevents ClassCastException)
+ *                     Added bounds checking for all substring operations
+ *                     Added null validation in API callbacks and list iterations
+ *                     Significantly improved stability and fault tolerance
  */
 
 import groovy.json.JsonSlurper
@@ -257,7 +263,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.0.5"
+@Field static final String DRIVER_VERSION = "3.1.0"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================

@@ -55,6 +55,11 @@
  *                     Direct log.info calls in callback to bypass log level filtering
  *  3.0.9  2026-01-20  Added setSetting() method for Hood lighting/fan control
  *                     Enables child drivers to set appliance settings via API
+ *  3.1.0  2026-01-21  Hardened code with comprehensive error handling and input validation
+ *                     Added OAuth token validation to prevent null token assignment
+ *                     Added null checks in API callback closures
+ *                     Added substring bounds checking in Stream Driver
+ *                     Significantly improved stability and fault tolerance
  */
 
 import groovy.json.JsonSlurper

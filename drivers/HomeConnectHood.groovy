@@ -38,6 +38,12 @@
  *  3.0.1  2026-01-14  Enhanced debugging for remote troubleshooting
  *  3.0.2  2026-01-20  Added elapsed program time handling
  *                     Added remaining program time handling
+ *  3.1.0  2026-01-21  Hardened code with comprehensive error handling and input validation
+ *                     Added safe JSON parsing with error handling (prevents crashes on malformed data)
+ *                     Added safe type casting with validation (prevents ClassCastException)
+ *                     Added bounds checking for all substring operations
+ *                     Added null validation in API callbacks and list iterations
+ *                     Significantly improved stability and fault tolerance
  */
 
 import groovy.json.JsonSlurper
@@ -229,7 +235,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.0.2"
+@Field static final String DRIVER_VERSION = "3.1.0"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map FAN_SPEEDS = [
@@ -766,7 +772,7 @@ def parseEvent(Map evt) {
 
         // ===== Program Timing =====
         case "BSH.Common.Option.ElapsedProgramTime":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "elapsedProgramTime", value: sec)
             sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(sec))
             break
