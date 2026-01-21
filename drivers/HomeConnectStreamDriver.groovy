@@ -374,8 +374,8 @@ def notifyParentReconnected() {
  * We apply an extended backoff (10 minutes) and force OAuth token refresh
  */
 private void handleFollowUpRequestsError(String status) {
-    logError("ProtocolException: Too many follow-up requests detected")
-    logError("This may indicate OAuth token issues or API endpoint problems")
+    logWarn("ProtocolException: Too many follow-up requests detected")
+    logWarn("This may indicate OAuth token issues or API endpoint problems")
 
     // Extract the redirect count if available (e.g., "follow-up requests: 21")
     def matcher = status =~ /follow-up requests: (\d+)/
