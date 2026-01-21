@@ -39,6 +39,12 @@
  *  ----------------
  *  3.0.0  2026-01-15  Initial v3 architecture with parseEvent() pattern
  *  3.0.1  2026-01-15  Enhanced debugging for remote troubleshooting
+ *  3.1.0  2026-01-21  Hardened code with comprehensive error handling and input validation
+ *                     Added safe JSON parsing with error handling (prevents crashes on malformed data)
+ *                     Added safe type casting with validation (prevents ClassCastException)
+ *                     Added bounds checking for all substring operations
+ *                     Added null validation in API callbacks and list iterations
+ *                     Significantly improved stability and fault tolerance
  */
 
 import groovy.json.JsonSlurper
@@ -248,7 +254,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.0.1"
+@Field static final String DRIVER_VERSION = "3.1.0"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map WASH_PROGRAMS = [

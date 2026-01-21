@@ -50,6 +50,12 @@
  *                     Supports both production and simulator APIs via parent app
  *  3.0.3  2026-01-08  Added lastEventReceived timestamp for stream health monitoring
  *                     Added rateLimitRemaining/rateLimitLimit attributes from API headers
+ *  3.1.0  2026-01-21  Hardened code with comprehensive error handling and input validation
+ *                     Added safe JSON parsing with error handling (prevents crashes on malformed data)
+ *                     Added safe type casting with validation (prevents ClassCastException)
+ *                     Added bounds checking for all substring operations
+ *                     Added null validation in API callbacks and list iterations
+ *                     Significantly improved stability and fault tolerance
  */
 
 import groovy.json.JsonSlurper
@@ -95,7 +101,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.0.3"
+@Field static final String DRIVER_VERSION = "3.1.0"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
