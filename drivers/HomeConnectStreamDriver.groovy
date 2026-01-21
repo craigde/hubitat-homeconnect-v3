@@ -60,7 +60,7 @@
  *                     Added duplicate eventStreamStatus() call detection (prevents double-scheduling)
  *                     Added unschedule() calls to prevent overlapping reconnect timers
  *                     Added connection state guards to prevent concurrent connection attempts
- *                     Added specific handler for ProtocolException with extended 10-minute backoff
+ *                     Added specific handler for ProtocolException with 60s backoff and token refresh
  *                     Fixed bug where ERROR+STOP events caused 60s reconnect loop
  */
 
@@ -273,7 +273,7 @@ def clearRateLimit() {
  * - Normal disconnect (connection was successful): Wait 5 minutes, then reconnect
  * - Failed connection (never connected): Exponential backoff (60s, 120s, 240s, max 300s)
  * - Rate limited: Schedule reconnect for when limit expires + 5 min buffer
- * - Too many follow-up requests: Extended backoff (10 minutes)
+ * - Too many follow-up requests: 60 second backoff (same as failed connection)
  *
  * Note: Hubitat may call this method multiple times for a single disconnect event
  * (e.g., both "ERROR" and "STOP" messages). We use state.processingDisconnect to
@@ -371,7 +371,7 @@ def notifyParentReconnected() {
  * - API endpoint issues
  * - Network proxy/firewall issues
  *
- * We apply an extended backoff (10 minutes) and force OAuth token refresh
+ * We apply a 60 second backoff and force OAuth token refresh
  */
 private void handleFollowUpRequestsError(String status) {
     logWarn("ProtocolException: Too many follow-up requests detected")
@@ -392,16 +392,17 @@ private void handleFollowUpRequestsError(String status) {
     // Force OAuth token refresh on next connection
     parent?.refreshOAuthTokenAndRetry()
 
-    // Use extended backoff (10 minutes) to avoid hammering the API
-    // This is longer than normal disconnect but shorter than rate limit
-    def extendedBackoff = 600  // 10 minutes
+    // Use 60 second backoff - same as normal failed connection
+    // The duplicate event detection and unschedule() prevents the rapid reconnection loop
+    // that was previously occurring. 60s is fast enough for responsive manual device updates.
+    def protocolErrorBackoff = 60
 
     state.connectionSucceeded = false
     state.reconnectAttempts = 0  // Reset attempts since this is a different error class
 
-    logWarn("Scheduling reconnect with extended backoff: ${extendedBackoff}s (10 minutes)")
+    logWarn("Scheduling reconnect after ProtocolException: ${protocolErrorBackoff}s")
     sendEvent(name: "connectionStatus", value: "disconnected - protocol error")
-    runIn(extendedBackoff, "connect")
+    runIn(protocolErrorBackoff, "connect")
 }
 
 /**
