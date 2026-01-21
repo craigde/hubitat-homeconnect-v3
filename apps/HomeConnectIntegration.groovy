@@ -801,6 +801,13 @@ def getOAuthToken() {
 }
 
 /**
+ * Gets the OAuth token expiry timestamp (for troubleshooting)
+ */
+def getTokenExpiryTime() {
+    return atomicState.oAuthTokenExpires ?: 0
+}
+
+/**
  * Called by Stream Driver when a 401 error occurs
  * Forces token refresh and returns success status
  */

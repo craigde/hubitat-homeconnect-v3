@@ -62,6 +62,11 @@
  *                     Added connection state guards to prevent concurrent connection attempts
  *                     Added specific handler for ProtocolException with 60s backoff and token refresh
  *                     Fixed bug where ERROR+STOP events caused 60s reconnect loop
+ *  3.2.1  2026-01-21  Added troubleshooting instrumentation for ProtocolException
+ *                     Logs OAuth token age and validity at connection time
+ *                     Logs connection duration when ProtocolException occurs
+ *                     Logs API endpoint URL being used
+ *                     Helps identify root cause of redirect loops
  */
 
 import groovy.json.JsonSlurper
@@ -107,7 +112,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.0"
+@Field static final String DRIVER_VERSION = "3.2.1"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -202,11 +207,18 @@ def connect() {
         return
     }
 
+    // Log token metadata for troubleshooting ProtocolException
+    def tokenExpires = parent?.getTokenExpiryTime() ?: 0
+    def tokenAge = tokenExpires > 0 ? (tokenExpires - now()) / 1000 : -1
+    logDebug("OAuth token valid for ${tokenAge}s more")
+
     def language = parent?.getLanguage() ?: "en-US"
+    def apiUrl = getApiUrl()
+    logDebug("Connecting to: ${apiUrl}${ENDPOINT_APPLIANCES}/events")
 
     try {
         interfaces.eventStream.connect(
-            "${getApiUrl()}${ENDPOINT_APPLIANCES}/events",
+            "${apiUrl}${ENDPOINT_APPLIANCES}/events",
             [
                 rawData: true,
                 ignoreSSLIssues: true,
@@ -290,6 +302,7 @@ def eventStreamStatus(String status) {
         state.connectionSucceeded = true
         state.reconnectAttempts = 0
         state.lastConnectTime = now()
+        state.connectionStartTime = now()  // Track when connection established
         state.processingDisconnect = false  // Clear disconnect processing flag
 
         // Refresh device status if we were disconnected for more than 5 minutes
@@ -385,6 +398,20 @@ private void handleFollowUpRequestsError(String status) {
     }
 
     logWarn("HTTP client followed ${redirectCount} redirects before failing")
+
+    // Log connection duration for troubleshooting
+    def connectionStart = state.connectionStartTime ?: 0
+    if (connectionStart > 0) {
+        def duration = (now() - connectionStart) / 1000
+        logWarn("Connection lasted ${duration}s before ProtocolException")
+    }
+
+    // Log current token validity
+    def tokenExpires = parent?.getTokenExpiryTime() ?: 0
+    if (tokenExpires > 0) {
+        def tokenAge = (tokenExpires - now()) / 1000
+        logWarn("OAuth token still valid for ${tokenAge}s at time of error")
+    }
 
     // Cancel any scheduled reconnects
     unschedule("connect")
