@@ -70,6 +70,9 @@
  *  3.2.2  2026-01-21  Fixed "No active program" error appearing during app updates
  *                     Changed 404 handling for programs/active to DEBUG instead of throwing exception
  *                     Prevents alarming ERROR logs when dishwasher is idle during initialization
+ *  3.2.3  2026-01-21  Fixed driver version not updating after code changes
+ *                     Added version update to initialize() and refresh() methods
+ *                     Users can now click Initialize or Refresh to update displayed version
  */
 
 import groovy.json.JsonSlurper
@@ -115,7 +118,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.2"
+@Field static final String DRIVER_VERSION = "3.2.3"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -147,17 +150,21 @@ def updated() {
 /**
  * Called when device is initialized or hub restarts
  * Automatically attempts to connect to Home Connect
+ * Also updates the driver version attribute
  */
 def initialize() {
-    logDebug("Initializing - attempting to connect")
+    logInfo("Initializing Home Connect Stream Driver v${DRIVER_VERSION}")
+    sendEvent(name: "driverVersion", value: DRIVER_VERSION)
     connect()
 }
 
 /**
  * Refreshes the connection by disconnecting and reconnecting
+ * Also updates the driver version attribute
  */
 def refresh() {
     logInfo("Refreshing connection")
+    sendEvent(name: "driverVersion", value: DRIVER_VERSION)
     disconnect()
     pauseExecution(1000)
     connect()
