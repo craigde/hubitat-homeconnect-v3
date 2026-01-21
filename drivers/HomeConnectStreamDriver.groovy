@@ -56,6 +56,12 @@
  *                     Added bounds checking for all substring operations
  *                     Added null validation in API callbacks and list iterations
  *                     Significantly improved stability and fault tolerance
+ *  3.2.0  2026-01-21  Fixed "Too many follow-up requests" ProtocolException error
+ *                     Added duplicate eventStreamStatus() call detection (prevents double-scheduling)
+ *                     Added unschedule() calls to prevent overlapping reconnect timers
+ *                     Added connection state guards to prevent concurrent connection attempts
+ *                     Added specific handler for ProtocolException with extended 10-minute backoff
+ *                     Fixed bug where ERROR+STOP events caused 60s reconnect loop
  */
 
 import groovy.json.JsonSlurper
@@ -101,7 +107,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.1.0"
+@Field static final String DRIVER_VERSION = "3.2.0"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -156,8 +162,21 @@ def refresh() {
 /**
  * Establishes SSE connection to Home Connect event stream
  * Handles rate limiting, token validation, and connection setup
+ *
+ * This method cancels any pending reconnection attempts before connecting
+ * to prevent overlapping connection attempts from stacking up.
  */
 def connect() {
+    // Cancel any previously scheduled connect() calls to prevent overlap
+    unschedule("connect")
+
+    // Check if we're already connecting or connected
+    def currentStatus = device.currentValue("connectionStatus")
+    if (currentStatus == "connecting" || currentStatus == "connected") {
+        logDebug("Already ${currentStatus} - ignoring duplicate connect() call")
+        return
+    }
+
     // Check if we're rate limited
     if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
         def rateLimitTime = state.rateLimitedUntilFormatted ?: formatDateTime(state.rateLimitedUntil)
@@ -165,7 +184,7 @@ def connect() {
         sendEvent(name: "connectionStatus", value: "rate limited until ${rateLimitTime}")
         return
     }
-    
+
     // Clear expired rate limit state
     if (state.rateLimitedUntil && now() >= state.rateLimitedUntil) {
         state.rateLimitedUntil = null
@@ -173,18 +192,18 @@ def connect() {
         state.reconnectAttempts = 0
         logInfo("Rate limit expired - cleared")
     }
-    
+
     logDebug("Connecting to Home Connect event stream")
-    
+
     def token = parent?.getOAuthToken()
     if (!token) {
         logError("No OAuth token available - cannot connect")
         sendEvent(name: "connectionStatus", value: "error - no token")
         return
     }
-    
+
     def language = parent?.getLanguage() ?: "en-US"
-    
+
     try {
         interfaces.eventStream.connect(
             "${getApiUrl()}${ENDPOINT_APPLIANCES}/events",
@@ -199,7 +218,7 @@ def connect() {
             ]
         )
         sendEvent(name: "connectionStatus", value: "connecting")
-        
+
     } catch (Exception e) {
         logError("Failed to connect: ${e.message}")
         sendEvent(name: "connectionStatus", value: "error")
@@ -208,15 +227,21 @@ def connect() {
 
 /**
  * Closes the SSE connection
+ * Cancels any pending reconnection attempts
  */
 def disconnect() {
     logInfo("Disconnecting from Home Connect event stream")
+
+    // Cancel any scheduled reconnection attempts
+    unschedule("connect")
+
     try {
         interfaces.eventStream.close()
     } catch (Exception e) {
         logWarn("Error during disconnect: ${e.message}")
     }
     sendEvent(name: "connectionStatus", value: "disconnected")
+    state.processingDisconnect = false  // Clear disconnect processing flag
 }
 
 /**
@@ -225,9 +250,14 @@ def disconnect() {
  */
 def clearRateLimit() {
     logInfo("Clearing rate limit state manually")
+
+    // Cancel any scheduled reconnects
+    unschedule("connect")
+
     state.rateLimitedUntil = null
     state.rateLimitedUntilFormatted = null
     state.reconnectAttempts = 0
+    state.processingDisconnect = false
     sendEvent(name: "connectionStatus", value: "disconnected")
 }
 
@@ -243,39 +273,61 @@ def clearRateLimit() {
  * - Normal disconnect (connection was successful): Wait 5 minutes, then reconnect
  * - Failed connection (never connected): Exponential backoff (60s, 120s, 240s, max 300s)
  * - Rate limited: Schedule reconnect for when limit expires + 5 min buffer
+ * - Too many follow-up requests: Extended backoff (10 minutes)
+ *
+ * Note: Hubitat may call this method multiple times for a single disconnect event
+ * (e.g., both "ERROR" and "STOP" messages). We use state.processingDisconnect to
+ * ensure we only schedule one reconnection attempt per disconnect.
  */
 def eventStreamStatus(String status) {
     logDebug("Event stream status: ${status}")
-    
+
     if (status.contains("START")) {
         // Connection successful
         sendEvent(name: "connectionStatus", value: "connected")
         messageBuffer = ""
-        
+
         state.connectionSucceeded = true
         state.reconnectAttempts = 0
         state.lastConnectTime = now()
-        
+        state.processingDisconnect = false  // Clear disconnect processing flag
+
         // Refresh device status if we were disconnected for more than 5 minutes
         def previousDisconnectTime = state.lastDisconnectTime ?: 0
         def disconnectedDuration = now() - previousDisconnectTime
-        
+
         if (previousDisconnectTime > 0 && disconnectedDuration > 300000) {
             logInfo("Was disconnected for ${(disconnectedDuration/1000).toInteger()}s - refreshing device status")
             runIn(2, "notifyParentReconnected")
         }
-        
+
     } else if (status.contains("STOP") || status.contains("ERROR")) {
+        // Check if we're already processing a disconnect (prevents double-scheduling from ERROR+STOP)
+        if (state.processingDisconnect) {
+            logDebug("Already processing disconnect - ignoring duplicate event")
+            return
+        }
+        state.processingDisconnect = true
+
         // Connection lost
         sendEvent(name: "connectionStatus", value: "disconnected")
         state.lastDisconnectTime = now()
-        
+
+        // Check for "Too many follow-up requests" error - needs special handling
+        if (status.contains("Too many follow-up requests") || status.contains("ProtocolException")) {
+            handleFollowUpRequestsError(status)
+            return
+        }
+
         // Don't reconnect if rate limited
         if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
             logWarn("Rate limited - not reconnecting")
             return
         }
-        
+
+        // Cancel any previously scheduled reconnection attempts
+        unschedule("connect")
+
         // Determine reconnect strategy based on whether we successfully connected
         if (state.connectionSucceeded) {
             // Normal disconnect after successful connection - wait 5 minutes
@@ -287,13 +339,13 @@ def eventStreamStatus(String status) {
             // Connection failed without ever succeeding - use exponential backoff
             def attempts = (state.reconnectAttempts ?: 0) + 1
             state.reconnectAttempts = attempts
-            
+
             if (attempts > MAX_RECONNECT_ATTEMPTS) {
                 logError("Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached - giving up. Click 'Connect' to retry manually.")
                 sendEvent(name: "connectionStatus", value: "failed - manual reconnect required")
                 return
             }
-            
+
             // Exponential backoff: 60s, 120s, 240s, max 300s
             def delay = Math.min(300, 60 * Math.pow(2, attempts - 1) as Integer)
             logWarn("Connection failed - scheduling reconnect in ${delay}s (attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS})")
@@ -308,6 +360,48 @@ def eventStreamStatus(String status) {
 def notifyParentReconnected() {
     logInfo("Notifying parent to refresh device status")
     parent?.refreshAllDeviceStatus()
+}
+
+/**
+ * Handles "Too many follow-up requests" ProtocolException error
+ * This error indicates the HTTP client followed 21+ redirects during the SSE stream
+ *
+ * Possible causes:
+ * - Invalid/expired OAuth token causing redirect loops
+ * - API endpoint issues
+ * - Network proxy/firewall issues
+ *
+ * We apply an extended backoff (10 minutes) and force OAuth token refresh
+ */
+private void handleFollowUpRequestsError(String status) {
+    logError("ProtocolException: Too many follow-up requests detected")
+    logError("This may indicate OAuth token issues or API endpoint problems")
+
+    // Extract the redirect count if available (e.g., "follow-up requests: 21")
+    def matcher = status =~ /follow-up requests: (\d+)/
+    def redirectCount = 21  // Default
+    if (matcher && matcher.size() > 0 && matcher[0].size() > 1) {
+        redirectCount = matcher[0][1].toInteger()
+    }
+
+    logWarn("HTTP client followed ${redirectCount} redirects before failing")
+
+    // Cancel any scheduled reconnects
+    unschedule("connect")
+
+    // Force OAuth token refresh on next connection
+    parent?.refreshOAuthTokenAndRetry()
+
+    // Use extended backoff (10 minutes) to avoid hammering the API
+    // This is longer than normal disconnect but shorter than rate limit
+    def extendedBackoff = 600  // 10 minutes
+
+    state.connectionSucceeded = false
+    state.reconnectAttempts = 0  // Reset attempts since this is a different error class
+
+    logWarn("Scheduling reconnect with extended backoff: ${extendedBackoff}s (10 minutes)")
+    sendEvent(name: "connectionStatus", value: "disconnected - protocol error")
+    runIn(extendedBackoff, "connect")
 }
 
 /**
