@@ -76,6 +76,9 @@
  *  3.2.4  2026-01-21  Changed HTTP 409 (Conflict) log level from WARN to DEBUG
  *                     409 responses are expected when appliance is not ready (door open, transitioning)
  *                     Reduces log noise for normal operating conditions
+ *  3.2.5  2026-01-21  Added defensive try/catch for getTokenExpiryTime() calls
+ *                     Prevents error if parent app hasn't been updated to v3.1.1 yet
+ *                     Stream Driver now gracefully handles missing parent app method
  */
 
 import groovy.json.JsonSlurper
@@ -121,7 +124,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.4"
+@Field static final String DRIVER_VERSION = "3.2.5"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -221,9 +224,13 @@ def connect() {
     }
 
     // Log token metadata for troubleshooting ProtocolException
-    def tokenExpires = parent?.getTokenExpiryTime() ?: 0
-    def tokenAge = tokenExpires > 0 ? (tokenExpires - now()) / 1000 : -1
-    logDebug("OAuth token valid for ${tokenAge}s more")
+    try {
+        def tokenExpires = parent?.getTokenExpiryTime() ?: 0
+        def tokenAge = tokenExpires > 0 ? (tokenExpires - now()) / 1000 : -1
+        logDebug("OAuth token valid for ${tokenAge}s more")
+    } catch (Exception e) {
+        // Parent app may not have getTokenExpiryTime() yet - ignore
+    }
 
     def language = parent?.getLanguage() ?: "en-US"
     def apiUrl = getApiUrl()
@@ -420,10 +427,14 @@ private void handleFollowUpRequestsError(String status) {
     }
 
     // Log current token validity
-    def tokenExpires = parent?.getTokenExpiryTime() ?: 0
-    if (tokenExpires > 0) {
-        def tokenAge = (tokenExpires - now()) / 1000
-        logWarn("OAuth token still valid for ${tokenAge}s at time of error")
+    try {
+        def tokenExpires = parent?.getTokenExpiryTime() ?: 0
+        if (tokenExpires > 0) {
+            def tokenAge = (tokenExpires - now()) / 1000
+            logWarn("OAuth token still valid for ${tokenAge}s at time of error")
+        }
+    } catch (Exception e) {
+        // Parent app may not have getTokenExpiryTime() yet - ignore
     }
 
     // Cancel any scheduled reconnects
