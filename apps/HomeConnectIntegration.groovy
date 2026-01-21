@@ -60,6 +60,10 @@
  *                     Added null checks in API callback closures
  *                     Added substring bounds checking in Stream Driver
  *                     Significantly improved stability and fault tolerance
+ *  3.1.1  2026-01-21  Improved app update behavior to avoid unnecessary reconnections
+ *                     Only call connect() on Stream Driver if devices were added/removed
+ *                     Added getTokenExpiryTime() helper for troubleshooting
+ *                     Prevents connection attempts when user just updates other settings
  */
 
 import groovy.json.JsonSlurper
@@ -84,7 +88,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.0.9"
+@Field static final String APP_VERSION = "3.1.1"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -391,11 +395,16 @@ def synchronizeDevices() {
     }
 
     // Remove devices that are no longer selected
-    deleteChildDevicesByDevices(childrenMap.values())
-    
-    // Start SSE connection
-    getStreamDriver()?.connect()
-    
+    def deletedDevices = childrenMap.values()
+    deleteChildDevicesByDevices(deletedDevices)
+
+    // Only attempt connection if devices were added/removed
+    // The connect() method has guards to prevent duplicate connections
+    if (newDevices || deletedDevices) {
+        logDebug("Device configuration changed - ensuring SSE connection")
+        getStreamDriver()?.connect()
+    }
+
     // Initialize new devices after a short delay (allows SSE to connect)
     if (newDevices) {
         runIn(5, "initializeNewDevices", [data: [deviceIds: newDevices.collect { it.deviceNetworkId }]])
@@ -798,6 +807,13 @@ def getOAuthToken() {
         refreshOAuthToken()
     }
     return atomicState.oAuthAuthToken
+}
+
+/**
+ * Gets the OAuth token expiry timestamp (for troubleshooting)
+ */
+def getTokenExpiryTime() {
+    return atomicState.oAuthTokenExpires ?: 0
 }
 
 /**
