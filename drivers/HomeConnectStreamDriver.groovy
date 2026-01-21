@@ -73,6 +73,9 @@
  *  3.2.3  2026-01-21  Fixed driver version not updating after code changes
  *                     Added version update to initialize() and refresh() methods
  *                     Users can now click Initialize or Refresh to update displayed version
+ *  3.2.4  2026-01-21  Changed HTTP 409 (Conflict) log level from WARN to DEBUG
+ *                     409 responses are expected when appliance is not ready (door open, transitioning)
+ *                     Reduces log noise for normal operating conditions
  */
 
 import groovy.json.JsonSlurper
@@ -118,7 +121,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.3"
+@Field static final String DRIVER_VERSION = "3.2.4"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -850,7 +853,8 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
             break
             
         case 409:
-            logWarn("API ${method} 409 Conflict - command cannot be executed in current state")
+            // 409 Conflict is expected when appliance is not ready (door open, transitioning state, etc.)
+            logDebug("API ${method} 409 Conflict - appliance not ready for command")
             break
             
         case 429:
