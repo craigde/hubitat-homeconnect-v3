@@ -67,6 +67,9 @@
  *                     Logs connection duration when ProtocolException occurs
  *                     Logs API endpoint URL being used
  *                     Helps identify root cause of redirect loops
+ *  3.2.2  2026-01-21  Fixed "No active program" error appearing during app updates
+ *                     Changed 404 handling for programs/active to DEBUG instead of throwing exception
+ *                     Prevents alarming ERROR logs when dishwasher is idle during initialization
  */
 
 import groovy.json.JsonSlurper
@@ -112,7 +115,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.1"
+@Field static final String DRIVER_VERSION = "3.2.2"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -831,7 +834,9 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
         case 404:
             if (path.contains('programs/active')) {
                 // No active program - expected when appliance is idle
-                throw new Exception("No active program")
+                // Don't throw exception as it gets logged as ERROR by Hubitat
+                // The closure simply won't be called, which the parent app handles gracefully
+                logDebug("No active program (appliance idle)")
             } else {
                 logWarn("API ${method} 404 Not Found: ${path}")
             }
