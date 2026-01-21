@@ -599,28 +599,80 @@ private void saveLastProgram(String program) {
 }
 
 // =============================================================================
+// JSON PARSING HELPER
+// =============================================================================
+
+/**
+ * Safely parses JSON with error handling
+ * @param json JSON string to parse
+ * @param defaultValue Value to return on parse failure (default: null)
+ * @return Parsed object or defaultValue on error
+ */
+private def safeJsonParse(String json, def defaultValue = null) {
+    try {
+        return new JsonSlurper().parseText(json)
+    } catch (Exception e) {
+        logError("JSON parse error: ${e.message}")
+        logDebug("Failed JSON: ${json?.take(200)}")
+        return defaultValue
+    }
+}
+
+/**
+ * Safely converts a value to Integer with validation
+ * @param value Value to convert
+ * @param defaultValue Value to return on conversion failure (default: 0)
+ * @return Integer value or defaultValue on error
+ */
+private Integer safeToInteger(def value, Integer defaultValue = 0) {
+    if (value == null) return defaultValue
+
+    try {
+        if (value instanceof Number) {
+            return value.intValue()
+        }
+        if (value instanceof String) {
+            return value.isInteger() ? value.toInteger() : defaultValue
+        }
+        if (value instanceof Boolean) {
+            return value ? 1 : 0
+        }
+        return defaultValue
+    } catch (Exception e) {
+        logWarn("Type conversion error for value '${value}': ${e.message}")
+        return defaultValue
+    }
+}
+
+// =============================================================================
 // INTERNAL COMMANDS (z_ prefix)
 // =============================================================================
 
 def z_parseStatus(String json) {
     logDebug("Parsing status")
     logTrace("Status JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseSettings(String json) {
     logDebug("Parsing settings")
     logTrace("Settings JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseAvailablePrograms(String json) {
     logDebug("Parsing available programs")
     logTrace("Programs JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    
+    def list = safeJsonParse(json, [])
+
+    if (!list) return
+
     def programMap = [:]
     def programNames = []
     
@@ -646,7 +698,9 @@ def z_parseAvailableOptions(String json) {
 def z_parseActiveProgram(String json) {
     logDebug("Parsing active program")
     logTrace("Active program JSON: ${json}")
-    def obj = new JsonSlurper().parseText(json)
+    def obj = safeJsonParse(json, [:])
+
+    if (!obj) return
 
     def name = obj?.name ?: obj?.data?.name ?: extractEnum(obj?.key ?: obj?.data?.key)
     if (name) {
@@ -769,7 +823,7 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Option.RemainingProgramTime":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "remainingProgramTime", value: sec)
             sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(sec))
             updateEstimatedEndTime(sec)
@@ -777,13 +831,13 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Option.ElapsedProgramTime":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "elapsedProgramTime", value: sec)
             sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(sec))
             break
 
         case "BSH.Common.Option.ProgramProgress":
-            Integer progress = evt.value as Integer
+            Integer progress = safeToInteger(evt.value)
             sendEvent(name: "programProgress", value: progress)
             sendEvent(name: "progressBar", value: "${progress}%")
             updateDerivedState()
@@ -804,10 +858,10 @@ def parseEvent(Map evt) {
             break
 
         case "ConsumerProducts.CookProcessor.Status.CurrentTemperature":
-            Integer temp = evt.value as Integer
+            Integer temp = safeToInteger(evt.value)
             sendEvent(name: "currentTemperature", value: temp)
             sendEvent(name: "temperature", value: temp)
-            
+
             // Check if target temperature reached
             def targetTemp = device.currentValue("targetTemperature") as Integer
             if (targetTemp && temp >= targetTemp && device.currentValue("heatingActive") == "true") {
@@ -818,14 +872,14 @@ def parseEvent(Map evt) {
             break
 
         case "ConsumerProducts.CookProcessor.Option.TargetTemperature":
-            Integer temp = evt.value as Integer
+            Integer temp = safeToInteger(evt.value)
             sendEvent(name: "targetTemperature", value: temp)
             sendEvent(name: "heatingActive", value: (temp > 0).toString())
             updateJsonState()
             break
 
         case "ConsumerProducts.CookProcessor.Option.MotorSpeed":
-            Integer speed = evt.value as Integer
+            Integer speed = safeToInteger(evt.value)
             sendEvent(name: "mixingSpeed", value: speed)
             sendEvent(name: "mixingSpeedDisplay", value: SPEED_NAMES[speed] ?: "Speed ${speed}")
             sendEvent(name: "motorActive", value: (speed > 0).toString())
@@ -833,23 +887,23 @@ def parseEvent(Map evt) {
             break
 
         case "ConsumerProducts.CookProcessor.Status.CurrentStep":
-            Integer step = evt.value as Integer
+            Integer step = safeToInteger(evt.value)
             sendEvent(name: "currentStep", value: step)
             updateStepProgress()
             updateDerivedState()
             break
 
         case "ConsumerProducts.CookProcessor.Status.TotalSteps":
-            Integer total = evt.value as Integer
+            Integer total = safeToInteger(evt.value)
             sendEvent(name: "totalSteps", value: total)
             updateStepProgress()
             break
 
         case "ConsumerProducts.CookProcessor.Option.StepRemainingTime":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "stepRemainingTime", value: sec)
             sendEvent(name: "stepRemainingTimeFormatted", value: secondsToTime(sec))
-            
+
             if (sec == 0) {
                 logInfo("Step timer complete - pushing button 4")
                 sendEvent(name: "pushed", value: 4, isStateChange: true, descriptionText: "Step timer complete")

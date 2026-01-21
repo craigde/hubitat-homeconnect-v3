@@ -569,19 +569,31 @@ def initializeStatus(device, boolean checkActiveProgram = true) {
 
     // Fetch current status
     streamDriver.getStatus(haId) { status ->
-        device.z_parseStatus(JsonOutput.toJson(status))
+        if (status != null) {
+            device.z_parseStatus(JsonOutput.toJson(status))
+        } else {
+            logWarn("Received null status for device ${haId}")
+        }
     }
 
     // Fetch current settings
     streamDriver.getSettings(haId) { settings ->
-        device.z_parseSettings(JsonOutput.toJson(settings))
+        if (settings != null) {
+            device.z_parseSettings(JsonOutput.toJson(settings))
+        } else {
+            logWarn("Received null settings for device ${haId}")
+        }
     }
 
     // Optionally fetch active program
     if (checkActiveProgram) {
         try {
             streamDriver.getActiveProgram(haId) { activeProgram ->
-                device.z_parseActiveProgram(JsonOutput.toJson(activeProgram))
+                if (activeProgram != null) {
+                    device.z_parseActiveProgram(JsonOutput.toJson(activeProgram))
+                } else {
+                    logDebug("No active program for device ${haId}")
+                }
             }
         } catch (Exception e) {
             // No active program - this is normal when appliance is idle
@@ -1046,11 +1058,26 @@ private boolean apiRequestAccessToken(Map body) {
             logDebug("Token response status: ${response.status}")
             
             if (response?.data && response.success) {
-                atomicState.oAuthRefreshToken = response.data.refresh_token
-                atomicState.oAuthAuthToken = response.data.access_token
-                atomicState.oAuthTokenExpires = now() + (response.data.expires_in * 1000)
-                logInfo("OAuth token acquired successfully, expires in ${response.data.expires_in}s")
-                success = true
+                def data = response.data
+
+                // Validate required fields exist and are valid
+                if (!data.access_token) {
+                    logError("OAuth token response missing access_token")
+                    atomicState.lastOAuthError = "Missing access_token in response"
+                } else if (!data.refresh_token) {
+                    logError("OAuth token response missing refresh_token")
+                    atomicState.lastOAuthError = "Missing refresh_token in response"
+                } else if (!data.expires_in || !(data.expires_in instanceof Number)) {
+                    logError("OAuth token response has invalid expires_in: ${data.expires_in}")
+                    atomicState.lastOAuthError = "Invalid expires_in value: ${data.expires_in}"
+                } else {
+                    // All validations passed - safe to assign
+                    atomicState.oAuthRefreshToken = data.refresh_token
+                    atomicState.oAuthAuthToken = data.access_token
+                    atomicState.oAuthTokenExpires = now() + (data.expires_in * 1000)
+                    logInfo("OAuth token acquired successfully, expires in ${data.expires_in}s")
+                    success = true
+                }
             } else {
                 logError("Token response unsuccessful: ${response.data}")
                 atomicState.lastOAuthError = "Token response unsuccessful"

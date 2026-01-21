@@ -396,21 +396,71 @@ def cancelAlarmClock() {
 }
 
 // =============================================================================
+// JSON PARSING HELPER
+// =============================================================================
+
+/**
+ * Safely parses JSON with error handling
+ * @param json JSON string to parse
+ * @param defaultValue Value to return on parse failure (default: null)
+ * @return Parsed object or defaultValue on error
+ */
+private def safeJsonParse(String json, def defaultValue = null) {
+    try {
+        return new JsonSlurper().parseText(json)
+    } catch (Exception e) {
+        logError("JSON parse error: ${e.message}")
+        logDebug("Failed JSON: ${json?.take(200)}")
+        return defaultValue
+    }
+}
+
+/**
+ * Safely converts a value to Integer with validation
+ * @param value Value to convert
+ * @param defaultValue Value to return on conversion failure (default: 0)
+ * @return Integer value or defaultValue on error
+ */
+private Integer safeToInteger(def value, Integer defaultValue = 0) {
+    if (value == null) return defaultValue
+
+    try {
+        if (value instanceof Number) {
+            return value.intValue()
+        }
+        if (value instanceof String) {
+            return value.isInteger() ? value.toInteger() : defaultValue
+        }
+        if (value instanceof Boolean) {
+            return value ? 1 : 0
+        }
+        return defaultValue
+    } catch (Exception e) {
+        logWarn("Type conversion error for value '${value}': ${e.message}")
+        return defaultValue
+    }
+}
+
+// =============================================================================
 // INTERNAL COMMANDS (z_ prefix)
 // =============================================================================
 
 def z_parseStatus(String json) {
     logDebug("Parsing status")
     logTrace("Status JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseSettings(String json) {
     logDebug("Parsing settings")
     logTrace("Settings JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseAvailablePrograms(String json) {
@@ -500,7 +550,7 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Setting.AlarmClock":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "alarmClockRemaining", value: sec)
             sendEvent(name: "alarmClockRemainingFormatted", value: secondsToTime(sec))
             break
@@ -526,15 +576,15 @@ def parseEvent(Map evt) {
                 def zoneNum = matcher.group(1)
                 def active = evt.value.toString().toLowerCase() == "true"
                 def prevActive = device.currentValue("zone${zoneNum}Active")
-                
+
                 sendEvent(name: "zone${zoneNum}Active", value: active.toString())
-                
+
                 // Push button when zone becomes active
                 if (active && prevActive != "true") {
                     logInfo("Zone ${zoneNum} activated - pushing button 2")
                     sendEvent(name: "pushed", value: 2, isStateChange: true, descriptionText: "Zone ${zoneNum} activated")
                 }
-                
+
                 updateActiveZonesCount()
                 updateJsonState()
             }
@@ -545,7 +595,7 @@ def parseEvent(Map evt) {
             def matcher = evt.key =~ /Zone(\d+)/
             if (matcher.find()) {
                 def zoneNum = matcher.group(1)
-                Integer powerLevel = evt.value as Integer
+                Integer powerLevel = safeToInteger(evt.value)
                 sendEvent(name: "zone${zoneNum}PowerLevel", value: powerLevel)
                 updateJsonState()
             }

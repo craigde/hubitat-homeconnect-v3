@@ -346,7 +346,7 @@ def parse(String text) {
     }
     
     // Also handle single data: lines for implementations that send them individually
-    if (text.startsWith("data:")) {
+    if (text.startsWith("data:") && text.length() > 5) {
         def payload = text.substring(5).trim()
         if (payload && payload.startsWith("{")) {
             processEventPayload(payload)
@@ -409,9 +409,9 @@ private void processSSEMessage(String message) {
     String dataPayload = null
     
     message.split("\n").each { line ->
-        if (line.startsWith("event:")) {
+        if (line.startsWith("event:") && line.length() > 6) {
             eventType = line.substring(6).trim()
-        } else if (line.startsWith("data:")) {
+        } else if (line.startsWith("data:") && line.length() > 5) {
             dataPayload = line.substring(5).trim()
         }
     }
@@ -461,7 +461,7 @@ private void processEventPayload(String payload, String eventType = null) {
         // Process status/event items and route to child device
         def items = json.items
         if (items instanceof List) {
-            items.each { item ->
+            items.findAll { it != null && it.key != null }.each { item ->
                 def evt = [
                     haId: haId,
                     key: item.key,
@@ -470,7 +470,7 @@ private void processEventPayload(String payload, String eventType = null) {
                     unit: item.unit,
                     eventType: eventType
                 ]
-                
+
                 logDebug("Routing event to child: ${item.key} = ${item.value}")
                 parent?.handleApplianceEvent(evt)
             }

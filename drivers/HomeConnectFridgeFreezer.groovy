@@ -523,21 +523,71 @@ def setPower(String powerState) {
 }
 
 // =============================================================================
+// JSON PARSING HELPER
+// =============================================================================
+
+/**
+ * Safely parses JSON with error handling
+ * @param json JSON string to parse
+ * @param defaultValue Value to return on parse failure (default: null)
+ * @return Parsed object or defaultValue on error
+ */
+private def safeJsonParse(String json, def defaultValue = null) {
+    try {
+        return new JsonSlurper().parseText(json)
+    } catch (Exception e) {
+        logError("JSON parse error: ${e.message}")
+        logDebug("Failed JSON: ${json?.take(200)}")
+        return defaultValue
+    }
+}
+
+/**
+ * Safely converts a value to Integer with validation
+ * @param value Value to convert
+ * @param defaultValue Value to return on conversion failure (default: 0)
+ * @return Integer value or defaultValue on error
+ */
+private Integer safeToInteger(def value, Integer defaultValue = 0) {
+    if (value == null) return defaultValue
+
+    try {
+        if (value instanceof Number) {
+            return value.intValue()
+        }
+        if (value instanceof String) {
+            return value.isInteger() ? value.toInteger() : defaultValue
+        }
+        if (value instanceof Boolean) {
+            return value ? 1 : 0
+        }
+        return defaultValue
+    } catch (Exception e) {
+        logWarn("Type conversion error for value '${value}': ${e.message}")
+        return defaultValue
+    }
+}
+
+// =============================================================================
 // INTERNAL COMMANDS (z_ prefix)
 // =============================================================================
 
 def z_parseStatus(String json) {
     logDebug("Parsing status")
     logTrace("Status JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseSettings(String json) {
     logDebug("Parsing settings")
     logTrace("Settings JSON: ${json}")
-    def list = new JsonSlurper().parseText(json)
-    parseItemList(list)
+    def list = safeJsonParse(json, [])
+    if (list) {
+        parseItemList(list)
+    }
 }
 
 def z_parseAvailablePrograms(String json) {
@@ -637,7 +687,7 @@ def parseEvent(Map evt) {
 
         // Fridge temperature
         case "Refrigeration.FridgeFreezer.Status.TemperatureRefrigerator":
-            Integer tempC = evt.value as Integer
+            Integer tempC = safeToInteger(evt.value)
             Integer tempDisplay = convertTemperatureForDisplay(tempC)
             sendEvent(name: "fridgeTemperature", value: tempDisplay)
             updatePrimaryTemperature()
@@ -645,7 +695,7 @@ def parseEvent(Map evt) {
             break
 
         case "Refrigeration.FridgeFreezer.Setting.SetpointTemperatureRefrigerator":
-            Integer tempC = evt.value as Integer
+            Integer tempC = safeToInteger(evt.value)
             Integer tempDisplay = convertTemperatureForDisplay(tempC)
             sendEvent(name: "fridgeTargetTemperature", value: tempDisplay)
             updateJsonState()
@@ -653,7 +703,7 @@ def parseEvent(Map evt) {
 
         // Freezer temperature
         case "Refrigeration.FridgeFreezer.Status.TemperatureFreezer":
-            Integer tempC = evt.value as Integer
+            Integer tempC = safeToInteger(evt.value)
             Integer tempDisplay = convertTemperatureForDisplay(tempC)
             sendEvent(name: "freezerTemperature", value: tempDisplay)
             updatePrimaryTemperature()
@@ -661,7 +711,7 @@ def parseEvent(Map evt) {
             break
 
         case "Refrigeration.FridgeFreezer.Setting.SetpointTemperatureFreezer":
-            Integer tempC = evt.value as Integer
+            Integer tempC = safeToInteger(evt.value)
             Integer tempDisplay = convertTemperatureForDisplay(tempC)
             sendEvent(name: "freezerTargetTemperature", value: tempDisplay)
             updateJsonState()
