@@ -415,6 +415,32 @@ private def safeJsonParse(String json, def defaultValue = null) {
     }
 }
 
+/**
+ * Safely converts a value to Integer with validation
+ * @param value Value to convert
+ * @param defaultValue Value to return on conversion failure (default: 0)
+ * @return Integer value or defaultValue on error
+ */
+private Integer safeToInteger(def value, Integer defaultValue = 0) {
+    if (value == null) return defaultValue
+
+    try {
+        if (value instanceof Number) {
+            return value.intValue()
+        }
+        if (value instanceof String) {
+            return value.isInteger() ? value.toInteger() : defaultValue
+        }
+        if (value instanceof Boolean) {
+            return value ? 1 : 0
+        }
+        return defaultValue
+    } catch (Exception e) {
+        logWarn("Type conversion error for value '${value}': ${e.message}")
+        return defaultValue
+    }
+}
+
 // =============================================================================
 // INTERNAL COMMANDS (z_ prefix)
 // =============================================================================
@@ -524,7 +550,7 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Setting.AlarmClock":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "alarmClockRemaining", value: sec)
             sendEvent(name: "alarmClockRemainingFormatted", value: secondsToTime(sec))
             break
@@ -550,15 +576,15 @@ def parseEvent(Map evt) {
                 def zoneNum = matcher.group(1)
                 def active = evt.value.toString().toLowerCase() == "true"
                 def prevActive = device.currentValue("zone${zoneNum}Active")
-                
+
                 sendEvent(name: "zone${zoneNum}Active", value: active.toString())
-                
+
                 // Push button when zone becomes active
                 if (active && prevActive != "true") {
                     logInfo("Zone ${zoneNum} activated - pushing button 2")
                     sendEvent(name: "pushed", value: 2, isStateChange: true, descriptionText: "Zone ${zoneNum} activated")
                 }
-                
+
                 updateActiveZonesCount()
                 updateJsonState()
             }
@@ -569,7 +595,7 @@ def parseEvent(Map evt) {
             def matcher = evt.key =~ /Zone(\d+)/
             if (matcher.find()) {
                 def zoneNum = matcher.group(1)
-                Integer powerLevel = evt.value as Integer
+                Integer powerLevel = safeToInteger(evt.value)
                 sendEvent(name: "zone${zoneNum}PowerLevel", value: powerLevel)
                 updateJsonState()
             }

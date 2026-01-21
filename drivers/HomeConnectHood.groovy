@@ -597,6 +597,32 @@ private def safeJsonParse(String json, def defaultValue = null) {
     }
 }
 
+/**
+ * Safely converts a value to Integer with validation
+ * @param value Value to convert
+ * @param defaultValue Value to return on conversion failure (default: 0)
+ * @return Integer value or defaultValue on error
+ */
+private Integer safeToInteger(def value, Integer defaultValue = 0) {
+    if (value == null) return defaultValue
+
+    try {
+        if (value instanceof Number) {
+            return value.intValue()
+        }
+        if (value instanceof String) {
+            return value.isInteger() ? value.toInteger() : defaultValue
+        }
+        if (value instanceof Boolean) {
+            return value ? 1 : 0
+        }
+        return defaultValue
+    } catch (Exception e) {
+        logWarn("Type conversion error for value '${value}': ${e.message}")
+        return defaultValue
+    }
+}
+
 // =============================================================================
 // INTERNAL COMMANDS (z_ prefix)
 // =============================================================================
@@ -762,7 +788,7 @@ def parseEvent(Map evt) {
             break
 
         case "Cooking.Common.Setting.LightingBrightness":
-            Integer brightness = evt.value as Integer
+            Integer brightness = safeToInteger(evt.value)
             sendEvent(name: "functionalLightBrightness", value: brightness)
             sendEvent(name: "level", value: brightness)
             break
@@ -773,7 +799,7 @@ def parseEvent(Map evt) {
             break
 
         case "Cooking.Hood.Setting.AmbientLightBrightness":
-            Integer brightness = evt.value as Integer
+            Integer brightness = safeToInteger(evt.value)
             sendEvent(name: "ambientLightBrightness", value: brightness)
             break
 
@@ -792,7 +818,7 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Option.RemainingProgramTime":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "delayedShutOffRemaining", value: sec)
             sendEvent(name: "delayedShutOffRemainingFormatted", value: secondsToTime(sec))
             break

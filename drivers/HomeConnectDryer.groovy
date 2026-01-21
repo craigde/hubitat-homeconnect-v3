@@ -654,6 +654,32 @@ private def safeJsonParse(String json, def defaultValue = null) {
     }
 }
 
+/**
+ * Safely converts a value to Integer with validation
+ * @param value Value to convert
+ * @param defaultValue Value to return on conversion failure (default: 0)
+ * @return Integer value or defaultValue on error
+ */
+private Integer safeToInteger(def value, Integer defaultValue = 0) {
+    if (value == null) return defaultValue
+
+    try {
+        if (value instanceof Number) {
+            return value.intValue()
+        }
+        if (value instanceof String) {
+            return value.isInteger() ? value.toInteger() : defaultValue
+        }
+        if (value instanceof Boolean) {
+            return value ? 1 : 0
+        }
+        return defaultValue
+    } catch (Exception e) {
+        logWarn("Type conversion error for value '${value}': ${e.message}")
+        return defaultValue
+    }
+}
+
 // =============================================================================
 // INTERNAL COMMANDS (z_ prefix)
 // =============================================================================
@@ -820,7 +846,7 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Option.RemainingProgramTime":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "remainingProgramTime", value: sec)
             sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(sec))
             updateEstimatedEndTime(sec)
@@ -828,13 +854,13 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Option.ElapsedProgramTime":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "elapsedProgramTime", value: sec)
             sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(sec))
             break
 
         case "BSH.Common.Option.ProgramProgress":
-            Integer progress = evt.value as Integer
+            Integer progress = safeToInteger(evt.value)
             sendEvent(name: "programProgress", value: progress)
             sendEvent(name: "progressBar", value: "${progress}%")
             updateDerivedState()
@@ -842,7 +868,7 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Option.StartInRelative":
-            Integer sec = evt.value as Integer
+            Integer sec = safeToInteger(evt.value)
             sendEvent(name: "startInRelative", value: sec)
             sendEvent(name: "startInRelativeFormatted", value: secondsToTime(sec))
             break
