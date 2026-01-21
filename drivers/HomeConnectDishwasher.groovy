@@ -309,6 +309,7 @@ private void initializeState() {
  */
 def initialize() {
     logInfo("Initializing")
+    sendEvent(name: "driverVersion", value: DRIVER_VERSION)
     initializeState()
     parent?.initializeStatus(device)
     runIn(5, "getAvailablePrograms")
@@ -319,6 +320,7 @@ def initialize() {
  */
 def refresh() {
     logInfo("Refreshing")
+    sendEvent(name: "driverVersion", value: DRIVER_VERSION)
     parent?.initializeStatus(device)
     getAvailablePrograms()
 }
