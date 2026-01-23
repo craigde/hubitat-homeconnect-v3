@@ -79,6 +79,17 @@
  *  3.2.5  2026-01-21  Added defensive try/catch for getTokenExpiryTime() calls
  *                     Prevents error if parent app hasn't been updated to v3.1.1 yet
  *                     Stream Driver now gracefully handles missing parent app method
+ *  3.2.6  2026-01-23  Improved SSE event diagnostics and stream management
+ *                     Added event statistics tracking to diagnose stream issues
+ *                     Added reconnect command to force stream refresh when events stop
+ *                     Added showEventStats/clearEventStats commands for troubleshooting
+ *                     Changed event routing logs from DEBUG to INFO for better visibility
+ *                     Added logging when stream has no items in event payload
+ *  3.2.7  2026-01-23  Improved error handling for 409 Conflict and 503 Service Unavailable
+ *                     Added user-friendly error messages when commands fail
+ *                     Automatically updates device lastCommandStatus with error details
+ *                     Extracts specific reason from error responses (door open, remote control, etc.)
+ *                     Changed 409 error log level from DEBUG to INFO for visibility
  */
 
 import groovy.json.JsonSlurper
@@ -97,6 +108,9 @@ metadata {
         command "connect"
         command "disconnect"
         command "clearRateLimit"
+        command "reconnect", [[name: "Reconnect", type: "STRING", description: "Disconnect and reconnect to refresh stream"]]
+        command "showEventStats", [[name: "Show Event Statistics", type: "STRING", description: "Display event statistics for diagnostics"]]
+        command "clearEventStats", [[name: "Clear Event Statistics", type: "STRING", description: "Clear event statistics"]]
 
         // Internal command (z_ prefix convention)
         command "z_deviceLog", [[name: "level", type: "STRING"], [name: "msg", type: "STRING"]]
@@ -124,7 +138,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.5"
+@Field static final String DRIVER_VERSION = "3.2.7"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -291,6 +305,48 @@ def clearRateLimit() {
     state.reconnectAttempts = 0
     state.processingDisconnect = false
     sendEvent(name: "connectionStatus", value: "disconnected")
+}
+
+/**
+ * Reconnects the stream by disconnecting and reconnecting
+ * Useful when events stop flowing - forces Home Connect to send current state
+ */
+def reconnect() {
+    logInfo("Reconnecting stream (user-requested)")
+    disconnect()
+    pauseExecution(2000)  // Wait 2 seconds before reconnecting
+    connect()
+}
+
+/**
+ * Shows event statistics for diagnostic purposes
+ */
+def showEventStats() {
+    logInfo("=== Event Statistics ===")
+    if (state.eventStats) {
+        state.eventStats.each { type, count ->
+            logInfo("${type}: ${count} events")
+        }
+        if (state.lastRealEventTime) {
+            def lastRealEventAgo = (now() - state.lastRealEventTime) / 1000
+            logInfo("Last real event: ${state.lastRealEventType} (${lastRealEventAgo.toInteger()}s ago)")
+        } else {
+            logInfo("No real events received yet (only keep-alives)")
+        }
+    } else {
+        logInfo("No events received yet")
+    }
+    logInfo("======================")
+}
+
+/**
+ * Clears event statistics
+ */
+def clearEventStats() {
+    logInfo("Clearing event statistics")
+    state.eventStats = [:]
+    state.lastRealEventTime = null
+    state.lastRealEventType = null
 }
 
 /* ===========================================================================================================
@@ -520,6 +576,27 @@ private void updateLastEventReceived() {
 }
 
 /**
+ * Updates event statistics to track what types of events we're receiving
+ * Helps diagnose issues where stream is connected but not receiving real events
+ */
+private void updateEventStats(String eventType) {
+    if (!state.eventStats) {
+        state.eventStats = [:]
+    }
+    if (!state.eventStats[eventType]) {
+        state.eventStats[eventType] = 0
+    }
+    state.eventStats[eventType] = state.eventStats[eventType] + 1
+
+    // Update last real event time (not keep-alive)
+    if (eventType != "KEEP-ALIVE") {
+        state.lastRealEventTime = now()
+        state.lastRealEventType = eventType
+        logInfo("Real event received: ${eventType} (total: ${state.eventStats[eventType]})")
+    }
+}
+
+/**
  * Handles rate limit (429) errors from the SSE stream
  * Extracts the retry time and schedules automatic reconnection
  */
@@ -590,26 +667,28 @@ private void processEventPayload(String payload, String eventType = null) {
     
     try {
         def json = new JsonSlurper().parseText(payload)
-        
+
         String haId = json.haId
         if (!haId) {
             logWarn("Event payload missing haId - ignoring")
             return
         }
-        
+
         // Handle keep-alive (heartbeat)
         if (eventType == "KEEP-ALIVE") {
             logDebug("Keep-alive received for appliance ${haId}")
+            updateEventStats("KEEP-ALIVE")
             return
         }
-        
+
         // Handle appliance connection status
         if (eventType == "DISCONNECTED" || eventType == "CONNECTED") {
             logInfo("Appliance ${haId} is now ${eventType}")
+            updateEventStats(eventType)
             parent?.handleApplianceConnectionEvent(haId, eventType)
             return
         }
-        
+
         // Process status/event items and route to child device
         def items = json.items
         if (items instanceof List) {
@@ -623,13 +702,17 @@ private void processEventPayload(String payload, String eventType = null) {
                     eventType: eventType
                 ]
 
-                logDebug("Routing event to child: ${item.key} = ${item.value}")
+                logInfo("Received event: ${eventType} - ${item.key} = ${item.value} for ${haId}")
+                updateEventStats(eventType ?: "STATUS")
                 parent?.handleApplianceEvent(evt)
             }
+        } else {
+            logDebug("Event payload has no items array - eventType: ${eventType}, haId: ${haId}")
         }
-        
+
     } catch (Exception e) {
         logError("Error parsing event payload: ${e.message}")
+        logError("Payload: ${payload?.take(200)}")
     }
 }
 
@@ -865,7 +948,14 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
             
         case 409:
             // 409 Conflict is expected when appliance is not ready (door open, transitioning state, etc.)
-            logDebug("API ${method} 409 Conflict - appliance not ready for command")
+            def reason = extractConflictReason(responseData)
+            logInfo("API ${method} 409 Conflict - ${reason}")
+
+            // Extract haId from path to notify the device
+            def haId = extractHaIdFromPath(path)
+            if (haId) {
+                parent?.handleCommandError(haId, "Appliance not ready", reason)
+            }
             break
             
         case 429:
@@ -876,11 +966,54 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
             
         case 503:
             logWarn("API ${method} 503 Service Unavailable - appliance may be offline")
+
+            // Extract haId from path to notify the device
+            def haId503 = extractHaIdFromPath(path)
+            if (haId503) {
+                parent?.handleCommandError(haId503, "Service unavailable", "appliance may be offline or network issue")
+            }
             break
             
         default:
             logError("API ${method} error ${statusCode}: ${responseData} - path: ${path}")
     }
+}
+
+/**
+ * Extracts a user-friendly conflict reason from 409 error response
+ */
+private String extractConflictReason(def responseData) {
+    if (!responseData) {
+        return "appliance not ready (check door, power, remote control)"
+    }
+
+    def errorString = responseData.toString().toLowerCase()
+
+    if (errorString.contains("door")) {
+        return "door may be open"
+    } else if (errorString.contains("remote")) {
+        return "remote control not active or not allowed"
+    } else if (errorString.contains("power")) {
+        return "appliance may be off or standby"
+    } else if (errorString.contains("operation")) {
+        return "appliance is transitioning states"
+    } else {
+        return "appliance not ready (check door, power, remote control)"
+    }
+}
+
+/**
+ * Extracts haId from API path
+ * Example: /api/homeappliances/SIEMENS-HCS02DWH1-6C6FA08A26F1/programs/active -> SIEMENS-HCS02DWH1-6C6FA08A26F1
+ */
+private String extractHaIdFromPath(String path) {
+    if (!path) return null
+
+    def matcher = path =~ /\/api\/homeappliances\/([^\/]+)/
+    if (matcher && matcher.size() > 0 && matcher[0].size() > 1) {
+        return matcher[0][1]
+    }
+    return null
 }
 
 /**
