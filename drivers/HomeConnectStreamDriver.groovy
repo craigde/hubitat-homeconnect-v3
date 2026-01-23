@@ -85,6 +85,11 @@
  *                     Added showEventStats/clearEventStats commands for troubleshooting
  *                     Changed event routing logs from DEBUG to INFO for better visibility
  *                     Added logging when stream has no items in event payload
+ *  3.2.7  2026-01-23  Improved error handling for 409 Conflict and 503 Service Unavailable
+ *                     Added user-friendly error messages when commands fail
+ *                     Automatically updates device lastCommandStatus with error details
+ *                     Extracts specific reason from error responses (door open, remote control, etc.)
+ *                     Changed 409 error log level from DEBUG to INFO for visibility
  */
 
 import groovy.json.JsonSlurper
@@ -133,7 +138,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.6"
+@Field static final String DRIVER_VERSION = "3.2.7"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -943,7 +948,14 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
             
         case 409:
             // 409 Conflict is expected when appliance is not ready (door open, transitioning state, etc.)
-            logDebug("API ${method} 409 Conflict - appliance not ready for command")
+            def reason = extractConflictReason(responseData)
+            logInfo("API ${method} 409 Conflict - ${reason}")
+
+            // Extract haId from path to notify the device
+            def haId = extractHaIdFromPath(path)
+            if (haId) {
+                parent?.handleCommandError(haId, "Appliance not ready", reason)
+            }
             break
             
         case 429:
@@ -954,11 +966,54 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
             
         case 503:
             logWarn("API ${method} 503 Service Unavailable - appliance may be offline")
+
+            // Extract haId from path to notify the device
+            def haId503 = extractHaIdFromPath(path)
+            if (haId503) {
+                parent?.handleCommandError(haId503, "Service unavailable", "appliance may be offline or network issue")
+            }
             break
             
         default:
             logError("API ${method} error ${statusCode}: ${responseData} - path: ${path}")
     }
+}
+
+/**
+ * Extracts a user-friendly conflict reason from 409 error response
+ */
+private String extractConflictReason(def responseData) {
+    if (!responseData) {
+        return "appliance not ready (check door, power, remote control)"
+    }
+
+    def errorString = responseData.toString().toLowerCase()
+
+    if (errorString.contains("door")) {
+        return "door may be open"
+    } else if (errorString.contains("remote")) {
+        return "remote control not active or not allowed"
+    } else if (errorString.contains("power")) {
+        return "appliance may be off or standby"
+    } else if (errorString.contains("operation")) {
+        return "appliance is transitioning states"
+    } else {
+        return "appliance not ready (check door, power, remote control)"
+    }
+}
+
+/**
+ * Extracts haId from API path
+ * Example: /api/homeappliances/SIEMENS-HCS02DWH1-6C6FA08A26F1/programs/active -> SIEMENS-HCS02DWH1-6C6FA08A26F1
+ */
+private String extractHaIdFromPath(String path) {
+    if (!path) return null
+
+    def matcher = path =~ /\/api\/homeappliances\/([^\/]+)/
+    if (matcher && matcher.size() > 0 && matcher[0].size() > 1) {
+        return matcher[0][1]
+    }
+    return null
 }
 
 /**

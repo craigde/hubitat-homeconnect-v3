@@ -64,6 +64,9 @@
  *                     Only call connect() on Stream Driver if devices were added/removed
  *                     Added getTokenExpiryTime() helper for troubleshooting
  *                     Prevents connection attempts when user just updates other settings
+ *  3.1.2  2026-01-23  Added handleCommandError() method for better error reporting
+ *                     Works with Stream Driver 3.2.7 to show user-friendly error messages
+ *                     Updates child device lastCommandStatus when commands fail
  */
 
 import groovy.json.JsonSlurper
@@ -88,7 +91,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.1.1"
+@Field static final String APP_VERSION = "3.1.2"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -531,6 +534,27 @@ def handleApplianceConnectionEvent(String haId, String status) {
             child.z_updateEventStreamStatus(status)
         } catch (Exception e) {
             // Method may not exist on all drivers
+        }
+    }
+}
+
+/**
+ * Called by Stream Driver when a command fails (e.g., 409 Conflict)
+ * Updates the child device's status to show the error
+ */
+def handleCommandError(String haId, String errorType, String errorMessage) {
+    logDebug("Command error for ${haId}: ${errorType} - ${errorMessage}")
+
+    String childDni = "HC3-${haId}"
+    def child = getChildDevice(childDni)
+
+    if (child) {
+        try {
+            def statusMsg = "Failed: ${errorMessage}"
+            child.sendEvent(name: "lastCommandStatus", value: statusMsg)
+            logWarn("${child.displayName}: ${statusMsg}")
+        } catch (Exception e) {
+            logDebug("Could not update command status: ${e.message}")
         }
     }
 }
