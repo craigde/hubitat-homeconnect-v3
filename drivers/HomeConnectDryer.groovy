@@ -44,6 +44,8 @@
  *                     Added bounds checking for all substring operations
  *                     Added null validation in API callbacks and list iterations
  *                     Significantly improved stability and fault tolerance
+ *  3.1.1  2026-01-23  Added handler for BSH.Common.Event.ProgramFinished event
+ *                     Eliminates "UNHANDLED SIGNIFICANT EVENT" messages for program completion
  */
 
 import groovy.json.JsonSlurper
@@ -252,7 +254,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.0"
+@Field static final String DRIVER_VERSION = "3.1.1"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map DRYER_PROGRAMS = [
@@ -942,6 +944,14 @@ def parseEvent(Map evt) {
                 sendEvent(name: "pushed", value: 3, isStateChange: true, descriptionText: "Empty water container")
                 sendAlert("ContainerFull", "Water container is full - please empty")
             }
+            break
+
+        // ===== Program Finished Event =====
+        case "BSH.Common.Event.ProgramFinished":
+            def value = extractEnum(evt.value)
+            logDebug("Program finished event: ${value}")
+            // Note: Cycle complete button push is handled by OperationState transition
+            // This event just confirms the program has finished
             break
 
         case ~/LaundryCare\.Dryer\.Option\..*/:
