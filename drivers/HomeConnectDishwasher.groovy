@@ -67,6 +67,10 @@
  *                     Significantly improved stability and fault tolerance
  *  3.1.1  2026-01-23  Added handler for BSH.Common.Event.ProgramFinished event
  *                     Eliminates "UNHANDLED SIGNIFICANT EVENT" messages for program completion
+ *  3.1.2  2026-01-23  Improved default program selection logic
+ *                     Now prefers "Auto" over "Normal/Eco50" as the default program
+ *                     Falls back to active/running program if available
+ *                     Better handles dishwashers that don't support Normal/Eco50 programs
  */
 
 import groovy.json.JsonSlurper
@@ -265,7 +269,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.1"
+@Field static final String DRIVER_VERSION = "3.1.2"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -626,32 +630,45 @@ private String buildProgramKey(String program) {
 
 /**
  * Gets the default program to use when none specified
- * Returns: last used program, or "Normal", or first available program
+ * Returns: last program, or active program, or "Auto", or first available program
  */
 private String getDefaultProgram() {
-    // First choice: last used program
+    // First choice: last used program (saved when user manually starts a program)
     def lastProgram = device.currentValue("lastProgram")
     if (lastProgram) {
         logDebug("Using last program: ${lastProgram}")
         return lastProgram
     }
-    
-    // Second choice: "Normal" if available
+
+    // Second choice: currently active program (if one is running)
+    def activeProgram = device.currentValue("activeProgram")
+    if (activeProgram) {
+        logDebug("Using active program: ${activeProgram}")
+        return activeProgram
+    }
+
+    // Third choice: "Auto" is generally the best default for dishwashers
+    if (state.programNames?.contains("Auto")) {
+        logDebug("Using default: Auto")
+        return "Auto"
+    }
+
+    // Fourth choice: "Normal" if available
     if (state.programNames?.contains("Normal")) {
         logDebug("Using default: Normal")
         return "Normal"
     }
-    
-    // Third choice: first available program
+
+    // Fifth choice: first available program
     if (state.programNames?.size() > 0) {
         def first = state.programNames[0]
         logDebug("Using first available: ${first}")
         return first
     }
-    
-    // Fallback: generic "Normal" and hope for the best
-    logDebug("No programs known, falling back to Normal")
-    return "Normal"
+
+    // Fallback: generic "Auto" and hope for the best
+    logDebug("No programs known, falling back to Auto")
+    return "Auto"
 }
 
 /**
