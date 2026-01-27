@@ -46,6 +46,7 @@
  *                     Significantly improved stability and fault tolerance
  *  3.1.1  2026-01-23  Added handler for BSH.Common.Event.ProgramFinished event
  *                     Eliminates "UNHANDLED SIGNIFICANT EVENT" messages for program completion
+ *  3.1.2  2026-01-27  Added interiorLight attribute and handler for BSH.Common.Status.InteriorIlluminationActive
  */
 
 import groovy.json.JsonSlurper
@@ -215,9 +216,15 @@ metadata {
         attribute "setpointTemperature", "number"
 
         // =====================================================================
+        // ATTRIBUTES - Interior Light
+        // =====================================================================
+
+        attribute "interiorLight", "enum", ["on", "off"]
+
+        // =====================================================================
         // ATTRIBUTES - Events & Alerts
         // =====================================================================
-        
+
         attribute "lastAlert", "string"
         attribute "lastAlertTime", "string"
 
@@ -860,6 +867,13 @@ def parseEvent(Map evt) {
             def doorState = extractEnum(evt.value)
             sendEvent(name: "doorState", value: doorState)
             sendEvent(name: "contact", value: (doorState == "Open" ? "open" : "closed"))
+            updateJsonState()
+            break
+
+        // ===== Interior Light =====
+        case "BSH.Common.Status.InteriorIlluminationActive":
+            def lightState = evt.value ? "on" : "off"
+            sendEvent(name: "interiorLight", value: lightState, descriptionText: "Interior light is ${lightState}")
             updateJsonState()
             break
 

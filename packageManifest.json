@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.2.7",
+  "version": "3.2.8",
   "minimumHEVersion": "2.3.0",
-  "dateReleased": "2026-01-15",
+  "dateReleased": "2026-01-27",
   "licenseFile": "",
-  "releaseNotes": "v3.2.7 - Improvements to dishwasher and stream driver",
+  "releaseNotes": "v3.2.8 - Added interiorLight attribute and handler to Oven driver",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "",
   "apps": [
