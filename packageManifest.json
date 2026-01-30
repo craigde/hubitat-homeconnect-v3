@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.2.9",
+  "version": "3.3.0",
   "minimumHEVersion": "2.3.0",
   "dateReleased": "2026-01-27",
   "licenseFile": "",
-  "releaseNotes": "v3.2.9 - Fix device driver not being added on first run",
+  "releaseNotes": "v3.3.0 - Add Actuator capability to all appliance drivers",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "",
   "apps": [
