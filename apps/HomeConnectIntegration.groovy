@@ -67,6 +67,9 @@
  *  3.1.2  2026-01-23  Added handleCommandError() method for better error reporting
  *                     Works with Stream Driver 3.2.7 to show user-friendly error messages
  *                     Updates child device lastCommandStatus when commands fail
+ *  3.1.3  2026-01-30  Fixed device creation failing on first install
+ *                     State from page render may not persist to lifecycle callbacks
+ *                     Now verifies foundDevices covers all selected devices before sync
  */
 
 import groovy.json.JsonSlurper
@@ -91,7 +94,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.1.2"
+@Field static final String APP_VERSION = "3.1.3"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -351,29 +354,37 @@ private String homeConnectIdToDeviceNetworkId(String haId) {
  */
 def synchronizeDevices() {
     logDebug("Synchronizing devices")
-    
+
     // Ensure stream driver exists
     createStreamDriver()
-    
-    // If foundDevices is empty, we may need to fetch them again
-    // This can happen on first install due to timing
-    if (!state.foundDevices || state.foundDevices.isEmpty()) {
-        logDebug("foundDevices is empty - fetching appliance list")
+
+    if (!settings.devices) {
+        logDebug("No devices selected - nothing to synchronize")
+        return
+    }
+
+    // Ensure foundDevices covers all selected devices
+    // state may not persist reliably between page render and lifecycle callbacks on first install
+    def foundDevices = state.foundDevices ?: []
+    def allFound = foundDevices && settings.devices.every { id -> foundDevices.any { it.haId == id } }
+
+    if (!allFound) {
+        logDebug("foundDevices missing or incomplete - fetching appliance list")
         def homeConnectDevices = fetchHomeConnectDevices()
         state.foundDevices = homeConnectDevices.collect { appliance ->
             [haId: appliance.haId, name: appliance.name, type: appliance.type]
         }
         logDebug("Populated foundDevices with ${state.foundDevices.size()} appliance(s)")
     }
-    
+
     def childDevices = getChildDevices()
     def childrenMap = childDevices.collectEntries { [(it.deviceNetworkId): it] }
-    
+
     // Don't touch the stream driver
     childrenMap.remove(STREAM_DRIVER_DNI)
 
     def newDevices = []
-    
+
     // Create devices for newly selected appliances
     for (homeConnectDeviceId in settings.devices) {
         def hubitatDeviceId = homeConnectIdToDeviceNetworkId(homeConnectDeviceId)
