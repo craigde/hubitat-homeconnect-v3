@@ -71,6 +71,8 @@
  *                     Now prefers "Auto" over "Normal/Eco50" as the default program
  *                     Falls back to active/running program if available
  *                     Better handles dishwashers that don't support Normal/Eco50 programs
+ *  3.1.3  2026-01-28  Added handler for BSH.Common.Event.ProgramAborted event
+ *                     Eliminates "UNHANDLED SIGNIFICANT EVENT" messages for program abort
  */
 
 import groovy.json.JsonSlurper
@@ -269,7 +271,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.2"
+@Field static final String DRIVER_VERSION = "3.1.3"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -1038,6 +1040,16 @@ def parseEvent(Map evt) {
             logDebug("Program finished event: ${value}")
             // Note: Cycle complete button push is handled by OperationState transition
             // This event just confirms the program has finished
+            break
+
+        // ===== Program Aborted Event =====
+        case "BSH.Common.Event.ProgramAborted":
+            def value = extractEnum(evt.value)
+            logDebug("Program aborted event: ${value}")
+            if (value == "Present") {
+                logInfo("Program was aborted")
+                sendAlert("ProgramAborted", "Dishwasher program was aborted")
+            }
             break
 
         // ===== Unhandled =====
