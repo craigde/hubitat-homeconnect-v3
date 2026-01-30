@@ -82,6 +82,7 @@ metadata {
     definition(name: "Home Connect Dishwasher v3", namespace: "craigde", author: "Craig Dewar") {
 
         // Standard capabilities
+        capability "Actuator"
         capability "Initialize"
         capability "Refresh"
         capability "Switch"

@@ -49,6 +49,7 @@ metadata {
     definition(name: "Home Connect CoffeeMaker v3", namespace: "craigde", author: "Craig Dewar") {
 
         // Standard capabilities
+        capability "Actuator"
         capability "Initialize"
         capability "Refresh"
         capability "Switch"
