@@ -53,6 +53,7 @@ metadata {
     definition(name: "Home Connect CookProcessor v3", namespace: "craigde", author: "Craig Dewar") {
 
         // Standard capabilities
+        capability "Actuator"
         capability "Initialize"
         capability "Refresh"
         capability "Switch"
