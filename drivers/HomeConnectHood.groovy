@@ -44,6 +44,13 @@
  *                     Added bounds checking for all substring operations
  *                     Added null validation in API callbacks and list iterations
  *                     Significantly improved stability and fault tolerance
+ *  3.2.0  2026-02-03  Fixed fan speed control - now uses program options instead of settings
+ *                     Fixes 409 UnsupportedSetting errors on hoods that use Option-based fan control
+ *                     Fixed program keys to use Cooking.Common.Program.Hood.* prefix
+ *                     Added handler for Cooking.Common.Option.Hood.VentingLevel events
+ *                     Added handler for Cooking.Common.Option.Hood.IntensiveLevel events
+ *                     Added handler for GreaseFilterMaxSaturationReached event
+ *                     Added greaseFilterAlert attribute
  */
 
 import groovy.json.JsonSlurper
@@ -177,9 +184,15 @@ metadata {
         attribute "delayedShutOffRemainingFormatted", "string"
 
         // =====================================================================
+        // ATTRIBUTES - Alerts
+        // =====================================================================
+
+        attribute "greaseFilterAlert", "string"
+
+        // =====================================================================
         // ATTRIBUTES - Control State
         // =====================================================================
-        
+
         attribute "remoteControlStartAllowed", "string"
         attribute "remoteControlActive", "string"
         attribute "localControlActive", "string"
@@ -236,7 +249,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.0"
+@Field static final String DRIVER_VERSION = "3.2.0"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map FAN_SPEEDS = [
@@ -459,13 +472,18 @@ def getAvailablePrograms() {
 def setFanSpeed(String speed) {
     logInfo("Setting fan speed: ${speed}")
     recordCommand("setFanSpeed", [speed: speed])
-    
+
     if (speed == "off") {
-        parent?.setSetting(device, "Cooking.Hood.Setting.VentingLevel", "Cooking.Hood.EnumType.Stage.FanOff")
+        // Turn off the fan by stopping the program
+        parent?.stopProgram(device)
     } else if (speed == "FanIntensive") {
-        parent?.setSetting(device, "Cooking.Hood.Setting.IntensiveLevel", "Cooking.Hood.EnumType.IntensiveStage.IntensiveStage1")
+        // Start venting program with intensive level option
+        def options = [[key: "Cooking.Common.Option.Hood.IntensiveLevel", value: "Cooking.Hood.EnumType.IntensiveStage.IntensiveStage1"]]
+        parent?.startProgram(device, "Cooking.Common.Program.Hood.Venting", options)
     } else if (FAN_SPEEDS.containsKey(speed)) {
-        parent?.setSetting(device, "Cooking.Hood.Setting.VentingLevel", FAN_SPEEDS[speed])
+        // Start venting program with desired fan level option
+        def options = [[key: "Cooking.Common.Option.Hood.VentingLevel", value: FAN_SPEEDS[speed]]]
+        parent?.startProgram(device, "Cooking.Common.Program.Hood.Venting", options)
     } else {
         logWarn("Unknown fan speed: ${speed}")
     }
@@ -508,18 +526,18 @@ def startProgram(String program = "Venting") {
     def programKey
     switch (program) {
         case "Automatic":
-            programKey = "Cooking.Hood.Program.Automatic"
+            programKey = "Cooking.Common.Program.Hood.Automatic"
             break
         case "Venting":
-            programKey = "Cooking.Hood.Program.Venting"
+            programKey = "Cooking.Common.Program.Hood.Venting"
             break
         case "DelayedShutOff":
-            programKey = "Cooking.Hood.Program.DelayedShutOff"
+            programKey = "Cooking.Common.Program.Hood.DelayedShutOff"
             break
         default:
-            programKey = "Cooking.Hood.Program.${program}"
+            programKey = "Cooking.Common.Program.Hood.${program}"
     }
-    
+
     logInfo("Starting program: ${program}")
     recordCommand("startProgram", [program: program, key: programKey])
     parent?.startProgram(device, programKey)
@@ -579,7 +597,7 @@ def setDelayedShutOff(BigDecimal minutes) {
     
     if (seconds > 0) {
         def options = [[key: "BSH.Common.Option.Duration", value: seconds, unit: "seconds"]]
-        parent?.startProgram(device, "Cooking.Hood.Program.DelayedShutOff", options)
+        parent?.startProgram(device, "Cooking.Common.Program.Hood.DelayedShutOff", options)
     } else {
         stopProgram()
     }
@@ -790,9 +808,10 @@ def parseEvent(Map evt) {
             break
 
         case "Cooking.Hood.Setting.VentingLevel":
+        case "Cooking.Common.Option.Hood.VentingLevel":
             def ventLevel = extractEnum(evt.value)
             sendEvent(name: "ventingLevel", value: ventLevel)
-            
+
             if (VENTING_LEVELS.containsKey(ventLevel)) {
                 def mapping = VENTING_LEVELS[ventLevel]
                 sendEvent(name: "speed", value: mapping[0])
@@ -805,6 +824,7 @@ def parseEvent(Map evt) {
             break
 
         case "Cooking.Hood.Setting.IntensiveLevel":
+        case "Cooking.Common.Option.Hood.IntensiveLevel":
             def intensiveLevel = extractEnum(evt.value)
             sendEvent(name: "intensiveLevel", value: intensiveLevel)
             if (intensiveLevel != "IntensiveStageOff") {
@@ -857,6 +877,15 @@ def parseEvent(Map evt) {
             def attr = evt.key.split("\\.").last()
             sendEvent(name: attr, value: evt.value.toString())
             logDebug("Hood setting: ${attr} = ${evt.value}")
+            break
+
+        // ===== Hood Events =====
+        case "Cooking.Common.Event.Hood.GreaseFilterMaxSaturationReached":
+            def value = extractEnum(evt.value)
+            sendEvent(name: "greaseFilterAlert", value: value)
+            if (value == "Present") {
+                logInfo("Grease filter needs cleaning")
+            }
             break
 
         default:
