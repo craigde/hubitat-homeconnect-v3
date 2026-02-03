@@ -90,6 +90,11 @@
  *                     Automatically updates device lastCommandStatus with error details
  *                     Extracts specific reason from error responses (door open, remote control, etc.)
  *                     Changed 409 error log level from DEBUG to INFO for visibility
+ *  3.2.8  2026-02-03  Improved 409 error messages with user-friendly translations
+ *                     Translates API error keys (UnsupportedSetting, UnsupportedOption, etc.)
+ *                     Extracts setting/option name from API path for context in messages
+ *                     Changed 409 command rejection log level to WARN for visibility
+ *                     Messages now clearly indicate what is not supported by the appliance
  */
 
 import groovy.json.JsonSlurper
@@ -138,7 +143,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.7"
+@Field static final String DRIVER_VERSION = "3.2.8"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -947,20 +952,20 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
             break
             
         case 409:
-            // 409 Conflict is expected when appliance is not ready (door open, transitioning state, etc.)
-            def reason = extractConflictReason(responseData)
+            // 409 Conflict - command rejected by appliance
+            def reasonInfo = extractConflictReason(responseData, path)
             logDebug("API ${method} 409 raw response: ${responseData}")
             logDebug("API ${method} 409 path: ${path}")
 
             if (method == "GET") {
                 // GET 409 occurs during status initialization - not a command failure
-                logDebug("API GET 409 Conflict - ${reason}")
+                logInfo("API GET 409 - ${reasonInfo.message}")
             } else {
-                // PUT/DELETE 409 is a command rejection - notify the device
-                logInfo("API ${method} 409 Conflict - ${reason}")
+                // PUT/DELETE 409 is a command rejection - always log visibly
+                logWarn("API ${method} 409 - ${reasonInfo.message}")
                 def haId = extractHaIdFromPath(path)
                 if (haId) {
-                    parent?.handleCommandError(haId, "Appliance not ready", reason)
+                    parent?.handleCommandError(haId, reasonInfo.errorType, reasonInfo.message)
                 }
             }
             break
@@ -988,10 +993,13 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
 
 /**
  * Extracts a user-friendly conflict reason from 409 error response
+ * Returns a map with 'message' (user-friendly) and 'errorType' (category)
  */
-private String extractConflictReason(def responseData) {
+private Map extractConflictReason(def responseData, String path = null) {
+    def target = extractTargetFromPath(path)
+
     if (!responseData) {
-        return "appliance not ready (check door, power, remote control)"
+        return [errorType: "Conflict", message: "Command rejected - appliance not ready (check door, power, remote control)"]
     }
 
     // Try to extract the error key and description from the API response
@@ -999,25 +1007,105 @@ private String extractConflictReason(def responseData) {
         def errorKey = responseData?.error?.key ?: ""
         def errorDesc = responseData?.error?.description ?: ""
         if (errorKey) {
-            return "${errorKey}${errorDesc ? ': ' + errorDesc : ''}"
+            return translateApiError(errorKey, errorDesc, target)
         }
     } catch (Exception e) {
         // Fall through to keyword matching
     }
 
+    // Fallback: keyword matching on raw response
     def errorString = responseData.toString().toLowerCase()
-
     if (errorString.contains("door")) {
-        return "door may be open"
+        return [errorType: "Door", message: "Command rejected - door may be open${target ? ' (' + target + ')' : ''}"]
     } else if (errorString.contains("remote")) {
-        return "remote control not active or not allowed"
+        return [errorType: "Remote Control", message: "Command rejected - remote control not active or not allowed"]
     } else if (errorString.contains("power")) {
-        return "appliance may be off or standby"
+        return [errorType: "Power", message: "Command rejected - appliance may be off or in standby"]
     } else if (errorString.contains("operation")) {
-        return "appliance is transitioning states"
+        return [errorType: "Operation", message: "Command rejected - appliance is busy or transitioning states"]
     } else {
-        return "appliance not ready (check door, power, remote control)"
+        return [errorType: "Conflict", message: "Command rejected - appliance not ready (check door, power, remote control)"]
     }
+}
+
+/**
+ * Translates Home Connect API error keys into user-friendly messages
+ */
+private Map translateApiError(String errorKey, String errorDesc, String target) {
+    def shortKey = errorKey.contains(".") ? errorKey.substring(errorKey.lastIndexOf(".") + 1) : errorKey
+    def targetInfo = target ? " '${target}'" : ""
+
+    switch (shortKey) {
+        case "UnsupportedSetting":
+            return [errorType: "Not Supported", message: "Setting${targetInfo} is not supported by this appliance"]
+        case "UnsupportedOption":
+            return [errorType: "Not Supported", message: "Option${targetInfo} is not supported by this appliance"]
+        case "UnsupportedCommand":
+            return [errorType: "Not Supported", message: "Command${targetInfo} is not supported by this appliance"]
+        case "UnsupportedOperation":
+            return [errorType: "Not Supported", message: "Operation${targetInfo} is not supported by this appliance in its current state"]
+        case "UnsupportedProgram":
+            return [errorType: "Not Supported", message: "Program${targetInfo} is not supported by this appliance"]
+        case "InvalidOptionValue":
+            return [errorType: "Invalid Value", message: "Invalid value for${targetInfo}${errorDesc ? ' - ' + errorDesc : ''}"]
+        case "InvalidSettingValue":
+            return [errorType: "Invalid Value", message: "Invalid value for setting${targetInfo}${errorDesc ? ' - ' + errorDesc : ''}"]
+        case "ReadOnlySetting":
+            return [errorType: "Read Only", message: "Setting${targetInfo} is read-only and cannot be changed"]
+        case "DoorOpen":
+            return [errorType: "Door", message: "Command rejected - door is open"]
+        case "NotInRemoteControlMode":
+        case "RemoteControlNotActive":
+            return [errorType: "Remote Control", message: "Remote control is not active on the appliance - enable it on the appliance first"]
+        case "RemoteStartNotAllowed":
+        case "NotInRemoteStartMode":
+            return [errorType: "Remote Start", message: "Remote start is not allowed - enable remote start on the appliance first"]
+        case "ActiveProgramNotSet":
+            return [errorType: "No Program", message: "No program is currently active"]
+        case "ProgramNotAvailable":
+            return [errorType: "Not Available", message: "Program${targetInfo} is not available in the current state"]
+        case "AlreadyInSelectedState":
+            return [errorType: "Already Set", message: "Appliance is already in the requested state"]
+        case "WrongOperationState":
+            return [errorType: "Wrong State", message: "Command rejected - appliance is not in the right state${errorDesc ? ' (' + errorDesc + ')' : ''}"]
+        default:
+            // For unknown error keys, show the key and description
+            return [errorType: shortKey, message: "${errorKey}${errorDesc ? ': ' + errorDesc : ''}${targetInfo ? ' for' + targetInfo : ''}"]
+    }
+}
+
+/**
+ * Extracts the setting/program name from an API path for context in error messages
+ * e.g., /api/homeappliances/xxx/settings/Cooking.Common.Setting.Lighting → Lighting
+ * e.g., /api/homeappliances/xxx/programs/active → active program
+ */
+private String extractTargetFromPath(String path) {
+    if (!path) return null
+
+    try {
+        // Settings path: .../settings/Some.Setting.Key
+        if (path.contains("/settings/")) {
+            def settingKey = path.substring(path.lastIndexOf("/settings/") + 10)
+            if (settingKey && !settingKey.isEmpty()) {
+                // Extract the last part of the dotted key for readability
+                return settingKey.contains(".") ? settingKey.substring(settingKey.lastIndexOf(".") + 1) : settingKey
+            }
+        }
+        // Programs path: .../programs/active
+        if (path.contains("/programs/active")) {
+            return null  // Program name is in the request body, not the path
+        }
+        // Options path: .../options/Some.Option.Key
+        if (path.contains("/options/")) {
+            def optionKey = path.substring(path.lastIndexOf("/options/") + 9)
+            if (optionKey && !optionKey.isEmpty()) {
+                return optionKey.contains(".") ? optionKey.substring(optionKey.lastIndexOf(".") + 1) : optionKey
+            }
+        }
+    } catch (Exception e) {
+        // Don't fail on path parsing
+    }
+    return null
 }
 
 /**
