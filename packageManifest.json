@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.3.3",
+  "version": "3.3.4",
   "minimumHEVersion": "2.3.0",
   "dateReleased": "2026-01-27",
   "licenseFile": "",
-  "releaseNotes": "v3.3.3 - Fix Hood fan control and add missing event handlers. Add clear error message when appliance driver is not installed",
+  "releaseNotes": "v3.3.4 - Fix Hood fan control and add missing event handlers. Add clear error message when appliance driver is not installed",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/release-home-connect-integration-control-bosch-siemens-thermador-and-more/160748",
   "payPalUrl": "https://www.paypal.com/paypalme/craigde",
