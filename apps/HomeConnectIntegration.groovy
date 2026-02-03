@@ -445,17 +445,22 @@ def initializeNewDevices(Map data) {
  */
 private def createApplianceDevice(String type, String dni) {
     def driverName = getDriverNameForType(type)
-    
+
     if (!driverName) {
         logError("Unsupported appliance type: ${type}")
         return null
     }
-    
+
     try {
         logInfo("Creating ${driverName} device")
         return addChildDevice('craigde', driverName, dni)
     } catch (Exception e) {
-        logError("Failed to create ${driverName}: ${e.message}")
+        def msg = e.message?.toLowerCase() ?: ""
+        if (msg.contains("not found") || msg.contains("driver") || msg.contains("namespace")) {
+            logError("Driver '${driverName}' is not installed. If you installed via HPM, go to Hubitat Package Manager → Modify → Home Connect Integration v3 and enable the optional driver for your ${type}.")
+        } else {
+            logError("Failed to create ${driverName}: ${e.message}")
+        }
         return null
     }
 }
