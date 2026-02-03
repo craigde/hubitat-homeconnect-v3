@@ -622,22 +622,28 @@ def initializeStatus(device, boolean checkActiveProgram = true) {
     
     logDebug("Initializing status for ${haId}")
 
-    // Fetch current status
-    streamDriver.getStatus(haId) { status ->
-        if (status != null) {
-            device.z_parseStatus(JsonOutput.toJson(status))
-        } else {
-            logWarn("Received null status for device ${haId}")
+    // Fetch current status - some appliance types may not support this
+    try {
+        streamDriver.getStatus(haId) { status ->
+            if (status != null) {
+                device.z_parseStatus(JsonOutput.toJson(status))
+            }
         }
+    } catch (Exception e) {
+        logDebug("Could not fetch status for ${device.displayName} (${haId}): ${e.message}")
+        logDebug("This is normal for some appliance types - device will update via event stream")
     }
 
-    // Fetch current settings
-    streamDriver.getSettings(haId) { settings ->
-        if (settings != null) {
-            device.z_parseSettings(JsonOutput.toJson(settings))
-        } else {
-            logWarn("Received null settings for device ${haId}")
+    // Fetch current settings - some appliance types may not support this
+    try {
+        streamDriver.getSettings(haId) { settings ->
+            if (settings != null) {
+                device.z_parseSettings(JsonOutput.toJson(settings))
+            }
         }
+    } catch (Exception e) {
+        logDebug("Could not fetch settings for ${device.displayName} (${haId}): ${e.message}")
+        logDebug("This is normal for some appliance types - device will update via event stream")
     }
 
     // Optionally fetch active program
