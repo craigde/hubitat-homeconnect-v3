@@ -271,6 +271,7 @@ def pageDevices() {
                 paragraph "Found ${deviceList.size()} appliance(s). Select the ones you want to control with Hubitat:"
                 input name: 'devices', title: 'Appliances', type: 'enum', required: true,
                       multiple: true, options: deviceList
+                paragraph "<b>HPM Users:</b> Make sure you have enabled the optional drivers for your selected appliances in Hubitat Package Manager (Modify → Home Connect Integration v3). Devices will not be created if the matching driver is not installed."
             }
         }
     }
@@ -445,17 +446,22 @@ def initializeNewDevices(Map data) {
  */
 private def createApplianceDevice(String type, String dni) {
     def driverName = getDriverNameForType(type)
-    
+
     if (!driverName) {
         logError("Unsupported appliance type: ${type}")
         return null
     }
-    
+
     try {
         logInfo("Creating ${driverName} device")
         return addChildDevice('craigde', driverName, dni)
     } catch (Exception e) {
-        logError("Failed to create ${driverName}: ${e.message}")
+        def msg = e.message?.toLowerCase() ?: ""
+        if (msg.contains("not found") || msg.contains("driver") || msg.contains("namespace")) {
+            logError("Driver '${driverName}' is not installed. If you installed via HPM, go to Hubitat Package Manager → Modify → Home Connect Integration v3 and enable the optional driver for your ${type}.")
+        } else {
+            logError("Failed to create ${driverName}: ${e.message}")
+        }
         return null
     }
 }
