@@ -271,6 +271,7 @@ def pageDevices() {
                 paragraph "Found ${deviceList.size()} appliance(s). Select the ones you want to control with Hubitat:"
                 input name: 'devices', title: 'Appliances', type: 'enum', required: true,
                       multiple: true, options: deviceList
+                paragraph "<b>HPM Users:</b> Make sure you have enabled the optional drivers for your selected appliances in Hubitat Package Manager (Modify → Home Connect Integration v3). Devices will not be created if the matching driver is not installed."
             }
         }
     }
