@@ -51,6 +51,9 @@
  *                     Added handler for Cooking.Common.Option.Hood.IntensiveLevel events
  *                     Added handler for GreaseFilterMaxSaturationReached event
  *                     Added greaseFilterAlert attribute
+ *  3.2.1  2026-02-03  Added FanControl compatibility for medium-low, medium-high, on speeds
+ *                     Setting light brightness to 0 now turns off the light
+ *                     Setting light brightness > 0 ensures light is turned on
  */
 
 import groovy.json.JsonSlurper
@@ -249,15 +252,20 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.2.0"
+@Field static final String DRIVER_VERSION = "3.2.1"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map FAN_SPEEDS = [
+    // Hubitat FanControl standard speeds
     "off": "Cooking.Hood.EnumType.Stage.FanOff",
     "low": "Cooking.Hood.EnumType.Stage.FanStage01",
+    "medium-low": "Cooking.Hood.EnumType.Stage.FanStage02",
     "medium": "Cooking.Hood.EnumType.Stage.FanStage03",
+    "medium-high": "Cooking.Hood.EnumType.Stage.FanStage04",
     "high": "Cooking.Hood.EnumType.Stage.FanStage05",
+    "on": "Cooking.Hood.EnumType.Stage.FanStage01",
     "auto": "Cooking.Hood.EnumType.Stage.FanStage03",
+    // Explicit stage selection
     "Fan1": "Cooking.Hood.EnumType.Stage.FanStage01",
     "Fan2": "Cooking.Hood.EnumType.Stage.FanStage02",
     "Fan3": "Cooking.Hood.EnumType.Stage.FanStage03",
@@ -560,10 +568,18 @@ def setLightBrightness(BigDecimal brightness) {
     Integer level = brightness.toInteger()
     if (level < 0) level = 0
     if (level > 100) level = 100
-    
+
     logInfo("Setting functional light brightness: ${level}%")
     recordCommand("setLightBrightness", [brightness: level])
-    parent?.setSetting(device, "Cooking.Common.Setting.LightingBrightness", level)
+
+    if (level == 0) {
+        // Brightness 0 turns light off
+        parent?.setSetting(device, "Cooking.Common.Setting.Lighting", false)
+    } else {
+        // Ensure light is on, then set brightness
+        parent?.setSetting(device, "Cooking.Common.Setting.Lighting", true)
+        parent?.setSetting(device, "Cooking.Common.Setting.LightingBrightness", level)
+    }
 }
 
 def setAmbientLight(String state) {
