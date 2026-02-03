@@ -47,6 +47,11 @@
  *  3.1.1  2026-01-23  Added handler for BSH.Common.Event.ProgramFinished event
  *                     Eliminates "UNHANDLED SIGNIFICANT EVENT" messages for program completion
  *  3.1.2  2026-01-27  Added interiorLight attribute and handler for BSH.Common.Status.InteriorIlluminationActive
+ *  3.2.0  2026-02-03  Fixed program key lookup to check available programs from API first
+ *                     Prevents UnsupportedProgram errors when static map has wrong key for oven model
+ *                     Added logging when falling back to static program key map
+ *  3.2.1  2026-02-03  on() now starts default program with default temperature instead of setting power
+ *                     off() now stops the active program instead of setting power off
  */
 
 import groovy.json.JsonSlurper
@@ -287,7 +292,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.1"
+@Field static final String DRIVER_VERSION = "3.2.1"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map HEATING_MODES = [
@@ -493,12 +498,12 @@ private void recordCommand(String command, Map params = [:]) {
 // USER-FACING COMMANDS
 // =============================================================================
 
-def on() { 
-    setPower("on") 
+def on() {
+    start()
 }
 
-def off() { 
-    setPower("off") 
+def off() {
+    stopProgram()
 }
 
 def getAvailablePrograms() {
@@ -643,18 +648,24 @@ def cancelAlarmClock() {
 }
 
 private String buildProgramKey(String program) {
+    // Already a fully-qualified key
     if (program?.contains(".")) {
         return program
     }
-    
-    if (HEATING_MODES.containsKey(program)) {
-        return HEATING_MODES[program]
-    }
-    
+
+    // Check available programs from API first - these are the actual
+    // programs supported by this specific oven model
     if (state.programMap?.containsKey(program)) {
         return state.programMap[program]
     }
-    
+
+    // Fall back to static map for common heating modes
+    if (HEATING_MODES.containsKey(program)) {
+        logInfo("Program '${program}' not found in available programs - using default key. Run getAvailablePrograms to refresh.")
+        return HEATING_MODES[program]
+    }
+
+    logWarn("Program '${program}' not recognized. Run getAvailablePrograms to see supported programs.")
     return "Cooking.Oven.Program.HeatingMode.${program}"
 }
 
