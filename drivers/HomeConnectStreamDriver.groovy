@@ -949,14 +949,19 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
         case 409:
             // 409 Conflict is expected when appliance is not ready (door open, transitioning state, etc.)
             def reason = extractConflictReason(responseData)
-            logInfo("API ${method} 409 Conflict - ${reason}")
             logDebug("API ${method} 409 raw response: ${responseData}")
             logDebug("API ${method} 409 path: ${path}")
 
-            // Extract haId from path to notify the device
-            def haId = extractHaIdFromPath(path)
-            if (haId) {
-                parent?.handleCommandError(haId, "Appliance not ready", reason)
+            if (method == "GET") {
+                // GET 409 occurs during status initialization - not a command failure
+                logDebug("API GET 409 Conflict - ${reason}")
+            } else {
+                // PUT/DELETE 409 is a command rejection - notify the device
+                logInfo("API ${method} 409 Conflict - ${reason}")
+                def haId = extractHaIdFromPath(path)
+                if (haId) {
+                    parent?.handleCommandError(haId, "Appliance not ready", reason)
+                }
             }
             break
             
