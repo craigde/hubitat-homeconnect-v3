@@ -560,7 +560,7 @@ def handleApplianceConnectionEvent(String haId, String status) {
  * Updates the child device's status to show the error
  */
 def handleCommandError(String haId, String errorType, String errorMessage) {
-    logDebug("Command error for ${haId}: ${errorType} - ${errorMessage}")
+    logInfo("Command error for ${haId}: [${errorType}] ${errorMessage}")
 
     String childDni = "HC3-${haId}"
     def child = getChildDevice(childDni)
