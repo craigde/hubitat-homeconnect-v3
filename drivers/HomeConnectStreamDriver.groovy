@@ -950,6 +950,8 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
             // 409 Conflict is expected when appliance is not ready (door open, transitioning state, etc.)
             def reason = extractConflictReason(responseData)
             logInfo("API ${method} 409 Conflict - ${reason}")
+            logDebug("API ${method} 409 raw response: ${responseData}")
+            logDebug("API ${method} 409 path: ${path}")
 
             // Extract haId from path to notify the device
             def haId = extractHaIdFromPath(path)
@@ -985,6 +987,17 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
 private String extractConflictReason(def responseData) {
     if (!responseData) {
         return "appliance not ready (check door, power, remote control)"
+    }
+
+    // Try to extract the error key and description from the API response
+    try {
+        def errorKey = responseData?.error?.key ?: ""
+        def errorDesc = responseData?.error?.description ?: ""
+        if (errorKey) {
+            return "${errorKey}${errorDesc ? ': ' + errorDesc : ''}"
+        }
+    } catch (Exception e) {
+        // Fall through to keyword matching
     }
 
     def errorString = responseData.toString().toLowerCase()
