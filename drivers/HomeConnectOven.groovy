@@ -50,6 +50,8 @@
  *  3.2.0  2026-02-03  Fixed program key lookup to check available programs from API first
  *                     Prevents UnsupportedProgram errors when static map has wrong key for oven model
  *                     Added logging when falling back to static program key map
+ *  3.2.1  2026-02-03  on() now starts default program with default temperature instead of setting power
+ *                     off() now stops the active program instead of setting power off
  */
 
 import groovy.json.JsonSlurper
@@ -290,7 +292,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.2.0"
+@Field static final String DRIVER_VERSION = "3.2.1"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map HEATING_MODES = [
@@ -496,12 +498,12 @@ private void recordCommand(String command, Map params = [:]) {
 // USER-FACING COMMANDS
 // =============================================================================
 
-def on() { 
-    setPower("on") 
+def on() {
+    start()
 }
 
-def off() { 
-    setPower("off") 
+def off() {
+    stopProgram()
 }
 
 def getAvailablePrograms() {
