@@ -1064,6 +1064,10 @@ private Map translateApiError(String errorKey, String errorDesc, String target) 
             return [errorType: "No Program", message: "No program is currently active"]
         case "ProgramNotAvailable":
             return [errorType: "Not Available", message: "Program${targetInfo} is not available in the current state"]
+        case "InvalidSettingState":
+            return [errorType: "Not Available", message: "Setting${targetInfo} is currently not available or writable"]
+        case "SelectedProgramNotSet":
+            return [errorType: "No Program", message: "No program is selected - select or start a program first before setting options"]
         case "AlreadyInSelectedState":
             return [errorType: "Already Set", message: "Appliance is already in the requested state"]
         case "WrongOperationState":
