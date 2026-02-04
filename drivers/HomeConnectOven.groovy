@@ -52,6 +52,8 @@
  *                     Added logging when falling back to static program key map
  *  3.2.1  2026-02-03  on() now starts default program with default temperature instead of setting power
  *                     off() now stops the active program instead of setting power off
+ *  3.2.2  2026-02-04  Added warning when setOvenTemperature/setDuration called without a program selected
+ *                     Guides user to use startProgramWithTemp or startTimedProgram instead
  */
 
 import groovy.json.JsonSlurper
@@ -292,7 +294,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.2.1"
+@Field static final String DRIVER_VERSION = "3.2.2"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map HEATING_MODES = [
@@ -534,7 +536,13 @@ def setOvenTemperature(BigDecimal temperature, String unit = null) {
     def tempUnit = unit ?: settings?.temperatureUnit ?: "F"
     Integer temp = temperature.toInteger()
     Integer tempC = (tempUnit == "F") ? fahrenheitToCelsius(temp) : temp
-    
+
+    def selectedProg = device.currentValue("selectedProgram")
+    def activeProg = device.currentValue("activeProgram")
+    if (!selectedProg && !activeProg) {
+        logWarn("No program is selected or active - temperature cannot be set. Use 'startProgramWithTemp' to start a program with a temperature in one step.")
+    }
+
     logInfo("Setting temperature to ${temp}°${tempUnit} (${tempC}°C)")
     recordCommand("setOvenTemperature", [temp: temp, unit: tempUnit, tempC: tempC])
     parent?.setSelectedProgramOption(device, "Cooking.Oven.Option.SetpointTemperature", tempC)
@@ -614,6 +622,12 @@ def setTargetTemperature(BigDecimal temperature, String unit = null) {
 }
 
 def setDuration(BigDecimal minutes) {
+    def selectedProg = device.currentValue("selectedProgram")
+    def activeProg = device.currentValue("activeProgram")
+    if (!selectedProg && !activeProg) {
+        logWarn("No program is selected or active - duration cannot be set. Use 'startTimedProgram' to start a program with duration in one step.")
+    }
+
     Integer durationSec = (minutes * 60).toInteger()
     logInfo("Setting duration: ${minutes} minutes")
     recordCommand("setDuration", [minutes: minutes])

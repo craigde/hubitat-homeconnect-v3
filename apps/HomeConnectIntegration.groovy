@@ -70,6 +70,9 @@
  *  3.1.3  2026-01-30  Fixed device creation failing on first install
  *                     State from page render may not persist to lifecycle callbacks
  *                     Now verifies foundDevices covers all selected devices before sync
+ *  3.1.4  2026-02-04  Fixed devices not created on first install - installed() now calls synchronizeDevices()
+ *                     Previously installed() only created the stream driver, not appliance devices
+ *                     Promoted synchronizeDevices logging to INFO for visibility
  */
 
 import groovy.json.JsonSlurper
@@ -94,7 +97,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.1.3"
+@Field static final String APP_VERSION = "3.1.4"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -114,7 +117,7 @@ private getClientSecret() { settings.clientSecret?.trim() }
 
 def installed() {
     logInfo("Installing Home Connect Integration v3")
-    createStreamDriver()
+    synchronizeDevices()
 }
 
 def uninstalled() {
@@ -354,13 +357,13 @@ private String homeConnectIdToDeviceNetworkId(String haId) {
  * Creates new devices, removes deselected ones
  */
 def synchronizeDevices() {
-    logDebug("Synchronizing devices")
+    logInfo("Synchronizing devices - ${settings.devices?.size() ?: 0} selected")
 
     // Ensure stream driver exists
     createStreamDriver()
 
     if (!settings.devices) {
-        logDebug("No devices selected - nothing to synchronize")
+        logInfo("No devices selected - nothing to synchronize")
         return
     }
 
@@ -370,12 +373,12 @@ def synchronizeDevices() {
     def allFound = foundDevices && settings.devices.every { id -> foundDevices.any { it.haId == id } }
 
     if (!allFound) {
-        logDebug("foundDevices missing or incomplete - fetching appliance list")
+        logInfo("Device info not cached - fetching appliance list from Home Connect API")
         def homeConnectDevices = fetchHomeConnectDevices()
         state.foundDevices = homeConnectDevices.collect { appliance ->
             [haId: appliance.haId, name: appliance.name, type: appliance.type]
         }
-        logDebug("Populated foundDevices with ${state.foundDevices.size()} appliance(s)")
+        logInfo("Found ${state.foundDevices.size()} appliance(s) from API")
     }
 
     def childDevices = getChildDevices()
