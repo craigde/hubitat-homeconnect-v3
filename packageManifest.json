@@ -1,11 +1,11 @@
 {
   "packageName": "Home Connect Integration v3",
   "author": "Craig Dewar",
-  "version": "3.3.5",
+  "version": "3.3.6",
   "minimumHEVersion": "2.3.0",
   "dateReleased": "2026-02-04",
   "licenseFile": "",
-  "releaseNotes": "v3.3.5\n- Fixed devices not created on first install\n- Oven: on/off now starts/stops programs instead of setting power\n- Oven: Fixed program key lookup to use API-reported keys\n- Oven: Added warnings when setting temp/duration without a program selected\n- Hood: Fixed fan speed control for Option-based hoods\n- Hood: Added FanControl compatibility (medium-low, medium-high, on)\n- Hood: Light brightness 0 now turns off light\n- Hood: Added grease filter alert handler\n- Improved 409 error messages with user-friendly translations\n- Added Actuator capability to all drivers\n- Added clear error message when optional HPM driver is missing",
+  "releaseNotes": "v3.3.6\n- Fixed devices not created on first install\n- Oven: on/off now starts/stops programs instead of setting power\n- Oven: Fixed program key lookup to use API-reported keys\n- Oven: Added warnings when setting temp/duration without a program selected\n- Hood: Fixed fan speed control for Option-based hoods\n- Hood: Added FanControl compatibility (medium-low, medium-high, on)\n- Hood: Light brightness 0 now turns off light\n- Hood: Added grease filter alert handler\n- Improved 409 error messages with user-friendly translations\n- Added Actuator capability to all drivers\n- Added clear error message when optional HPM driver is missing",
   "documentationLink": "https://github.com/craigde/hubitat-homeconnect-v3/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/release-home-connect-integration-control-bosch-siemens-thermador-and-more/160748",
   "payPalUrl": "https://www.paypal.com/paypalme/craigde",
