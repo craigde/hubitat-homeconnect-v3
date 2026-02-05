@@ -178,6 +178,7 @@ This application connects your Home Connect smart appliances to Hubitat.
    • <b>OAuth Flow:</b> Select <b>Authorization Code Grant Flow</b>
    • <b>Home Connect User Account for Testing:</b> Leave blank
    • <b>Redirect URI:</b> ${getFullApiServerUrl()}/oauth/callback
+     <small>(Format: https://cloud.hubitat.com/api/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/apps/NNN/oauth/callback)</small>
    • <b>One Time Token:</b> Leave unchecked
    • <b>Sync to China:</b> Leave unchecked
    • Click <b>Save</b>

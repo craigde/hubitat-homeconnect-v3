@@ -99,7 +99,9 @@ If you've never used Home Connect with Hubitat before, follow these steps:
    - Select your **Region**
    - Set **Log Level** (recommend "debug" for initial setup)
 2. Click **Next**
-3. The app will display your unique **Redirect URI** (includes your app-id)
+3. The app will display your unique **Redirect URI** - it will look like:
+   `https://cloud.hubitat.com/api/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/apps/123/oauth/callback`
+   (The x's will be your hub's unique cloud ID, and the number will be your app ID)
 4. Copy this URI - you'll need it for the next step
 5. Do NOT click "Authorize" yet - we need to add this URI to Home Connect first
 
@@ -147,7 +149,8 @@ Follow the manual installation steps from Option 1, Step 2B above.
    - Select your **Region** (same as your existing integration)
    - Set **Log Level** (recommend "debug" for initial setup)
 2. Click **Next**
-3. The app will display your v3-specific **Redirect URI**
+3. The app will display your v3-specific **Redirect URI** - it will look like:
+   `https://cloud.hubitat.com/api/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/apps/123/oauth/callback`
 4. Copy the Redirect URI (it will have a different app-id than your original integration)
 5. Do NOT click "Authorize" yet
 
