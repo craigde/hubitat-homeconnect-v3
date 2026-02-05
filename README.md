@@ -59,11 +59,15 @@ If you've never used Home Connect with Hubitat before, follow these steps:
 
 1. Go to [Home Connect Developer Portal](https://developer.home-connect.com)
 2. Sign up for a developer account (free)
-3. Create a new application with these settings:
+3. Click **Applications** → **Register Application** and fill in:
    - **Application ID**: Choose a unique name (e.g., `hubitat-yourname`)
-   - **OAuth Flow**: Authorization Code Grant Flow
+   - **OAuth Flow**: Select **Authorization Code Grant Flow**
+   - **Home Connect User Account for Testing**: Leave blank
    - **Redirect URI**: Leave blank for now (we'll add this in Step 4)
-4. Note your **Client ID** and **Client Secret** - you'll need these next
+   - **One Time Token**: Leave unchecked
+   - **Sync to China**: Leave unchecked
+   - Click **Save**
+4. After saving, your **Client ID** and **Client Secret** will be displayed - note these for the next step
 
 #### Step 2: Install the Integration
 
@@ -95,17 +99,19 @@ If you've never used Home Connect with Hubitat before, follow these steps:
    - Select your **Region**
    - Set **Log Level** (recommend "debug" for initial setup)
 2. Click **Next**
-3. The app will display your unique **Redirect URI** (includes your app-id)
+3. The app will display your unique **Redirect URI** - it will look like:
+   `https://cloud.hubitat.com/api/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/apps/123/oauth/callback`
+   (The x's will be your hub's unique cloud ID, and the number will be your app ID)
 4. Copy this URI - you'll need it for the next step
 5. Do NOT click "Authorize" yet - we need to add this URI to Home Connect first
 
 #### Step 4: Configure Home Connect with Your URI
 
 1. Return to your [Home Connect Developer Portal](https://developer.home-connect.com)
-2. Open the application you created in Step 1
+2. Click on the application you created in Step 1 to edit it
 3. In the **Redirect URI** field, paste the full URI shown in the Hubitat app
-4. Save your Home Connect application settings
-5. **Wait 30 minutes** - Home Connect requires propagation time
+4. Click **Save** to update your application settings
+5. **Wait 15-30 minutes** - Home Connect requires propagation time
 
 #### Step 5: Authorize & Discover Devices
 
@@ -143,17 +149,19 @@ Follow the manual installation steps from Option 1, Step 2B above.
    - Select your **Region** (same as your existing integration)
    - Set **Log Level** (recommend "debug" for initial setup)
 2. Click **Next**
-3. The app will display your v3-specific **Redirect URI**
+3. The app will display your v3-specific **Redirect URI** - it will look like:
+   `https://cloud.hubitat.com/api/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/apps/123/oauth/callback`
 4. Copy the Redirect URI (it will have a different app-id than your original integration)
 5. Do NOT click "Authorize" yet
 
 #### Step 3: Add Second Redirect URI to Home Connect
 
 1. Go to your [Home Connect Developer Portal](https://developer.home-connect.com)
-2. Open your existing application
-3. Add the new v3 Redirect URI (don't replace the existing one - you'll now have two URIs listed)
-4. Save the application settings
-5. **Wait 15-30 minutes** for propagation
+2. Click on your existing application to edit it
+3. Check **Add additional redirect URIs** to add a second URI field
+4. Paste the new v3 Redirect URI (keep the existing one - you'll have two URIs)
+5. Click **Save** to update the application
+6. **Wait 15-30 minutes** for propagation
 
 #### Step 4: Authorize & Create Test Devices
 

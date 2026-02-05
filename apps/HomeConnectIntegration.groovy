@@ -73,6 +73,8 @@
  *  3.1.4  2026-02-04  Fixed devices not created on first install - installed() now calls synchronizeDevices()
  *                     Previously installed() only created the stream driver, not appliance devices
  *                     Promoted synchronizeDevices logging to INFO for visibility
+ *  3.1.5  2026-02-05  Updated setup instructions for current Home Connect Developer portal interface
+ *                     Clarified OAuth Flow dropdown, One Time Token, and Sync to China options
  */
 
 import groovy.json.JsonSlurper
@@ -97,7 +99,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.1.4"
+@Field static final String APP_VERSION = "3.1.5"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -171,14 +173,19 @@ This application connects your Home Connect smart appliances to Hubitat.
 
 1. Create an account at the <a href="https://developer.home-connect.com/" target="_blank">Home Connect Developer Portal</a>
 
-2. Create a new application with these settings:
-   • <b>Application ID:</b> hubitat-homeconnect-integration
-   • <b>OAuth Flow:</b> Authorization Code Grant Flow
+2. Click <b>Applications</b> → <b>Register Application</b> and fill in:
+   • <b>Application ID:</b> Choose a unique name (e.g., hubitat-yourname)
+   • <b>OAuth Flow:</b> Select <b>Authorization Code Grant Flow</b>
+   • <b>Home Connect User Account for Testing:</b> Leave blank
    • <b>Redirect URI:</b> ${getFullApiServerUrl()}/oauth/callback
+     <small>(Format: https://cloud.hubitat.com/api/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/apps/NNN/oauth/callback)</small>
+   • <b>One Time Token:</b> Leave unchecked
+   • <b>Sync to China:</b> Leave unchecked
+   • Click <b>Save</b>
 
-3. Copy your Client ID and Client Secret below
+3. After saving, your <b>Client ID</b> and <b>Client Secret</b> will be displayed. Copy them below.
 
-4. <b>Important:</b> Wait approximately 30 minutes after creating the application before proceeding (Home Connect requires propagation time)
+4. <b>Important:</b> Wait approximately 15-30 minutes after creating the application before proceeding (Home Connect requires propagation time)
 """
         }
         section('Home Connect Developer Credentials') {
