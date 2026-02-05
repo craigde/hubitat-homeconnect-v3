@@ -99,7 +99,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.1.5"
+@Field static final String APP_VERSION = "3.1.6"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -173,19 +173,21 @@ This application connects your Home Connect smart appliances to Hubitat.
 
 1. Create an account at the <a href="https://developer.home-connect.com/" target="_blank">Home Connect Developer Portal</a>
 
-2. Click <b>Applications</b> → <b>Register Application</b> and fill in:
+2. <b>Important:</b> In your developer profile settings, set up a <b>Default Home Connect Account for Testing</b> with your Home Connect account email.
+
+3. Click <b>Applications</b> → <b>Register Application</b> and fill in:
    • <b>Application ID:</b> Choose a unique name (e.g., hubitat-yourname)
    • <b>OAuth Flow:</b> Select <b>Authorization Code Grant Flow</b>
-   • <b>Home Connect User Account for Testing:</b> Leave blank
+   • <b>Home Connect User Account for Testing:</b> Leave blank (uses profile default)
    • <b>Redirect URI:</b> ${getFullApiServerUrl()}/oauth/callback
      <small>(Format: https://cloud.hubitat.com/api/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/apps/NNN/oauth/callback)</small>
    • <b>One Time Token:</b> Leave unchecked
    • <b>Sync to China:</b> Leave unchecked
    • Click <b>Save</b>
 
-3. After saving, your <b>Client ID</b> and <b>Client Secret</b> will be displayed. Copy them below.
+4. After saving, your <b>Client ID</b> and <b>Client Secret</b> will be displayed. Copy them below.
 
-4. <b>Important:</b> Wait approximately 15-30 minutes after creating the application before proceeding (Home Connect requires propagation time)
+5. <b>Important:</b> Wait approximately 15-30 minutes after creating the application before proceeding (Home Connect requires propagation time)
 """
         }
         section('Home Connect Developer Credentials') {
