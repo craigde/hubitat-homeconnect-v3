@@ -80,6 +80,7 @@
  *  3.1.5  2026-02-06  Initialize RinseAidNearlyEmpty and SaltNearlyEmpty attributes to "Off"
  *                     Attributes now visible immediately instead of waiting for first event
  *                     Existing users can run Initialize to populate these attributes
+ *                     Fixed getDefaultProgram() to skip "None" as a valid activeProgram
  */
 
 import groovy.json.JsonSlurper
@@ -666,7 +667,7 @@ private String getDefaultProgram() {
 
     // Second choice: currently active program (if one is running)
     def activeProgram = device.currentValue("activeProgram")
-    if (activeProgram) {
+    if (activeProgram && activeProgram != "None") {
         logDebug("Using active program: ${activeProgram}")
         return activeProgram
     }
