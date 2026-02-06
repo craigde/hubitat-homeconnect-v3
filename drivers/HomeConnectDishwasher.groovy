@@ -73,6 +73,10 @@
  *                     Better handles dishwashers that don't support Normal/Eco50 programs
  *  3.1.3  2026-01-28  Added handler for BSH.Common.Event.ProgramAborted event
  *                     Eliminates "UNHANDLED SIGNIFICANT EVENT" messages for program abort
+ *  3.1.4  2026-02-06  Fixed cyclePhase and activeProgram not clearing when cycle completes
+ *                     cyclePhase now shows "Idle" when dishwasher is Ready/Inactive
+ *                     activeProgram now clears to "None" when cycle ends
+ *                     Improves automation reliability for webCoRE and Rule Machine
  */
 
 import groovy.json.JsonSlurper
@@ -170,7 +174,7 @@ metadata {
         attribute "selectedProgram", "string"       // Selected but not started
         attribute "programProgress", "number"       // 0-100 percent
         attribute "progressBar", "string"           // "45%"
-        attribute "cyclePhase", "string"            // Prewash, Wash, Rinse, Dry, Complete
+        attribute "cyclePhase", "string"            // Idle, Prewash, Wash, Rinse, Dry, Complete
 
         // =====================================================================
         // ATTRIBUTES - Timing
@@ -272,7 +276,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.3"
+@Field static final String DRIVER_VERSION = "3.1.4"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -1104,6 +1108,7 @@ private void resetProgramState() {
     sendEvent(name: "progressBar", value: "0%")
     sendEvent(name: "estimatedEndTimeFormatted", value: "")
     sendEvent(name: "startInRelative", value: "")
+    sendEvent(name: "activeProgram", value: "None")
 }
 
 /* ===========================================================================================================
@@ -1154,9 +1159,10 @@ private void updateDerivedState() {
  */
 private String determineCyclePhase(String opState, Integer progress) {
     if (opState == "Finished") return "Complete"
+    if (opState in ["Ready", "Inactive"]) return "Idle"
     if (progress == null) return null
-    
-    // Approximate phases based on typical dishwasher cycle
+
+    // Approximate phases based on typical dishwasher cycle (only when running)
     if (progress < 5) return "Prewash"
     if (progress < 40) return "Wash"
     if (progress < 70) return "Rinse"
