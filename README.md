@@ -59,15 +59,16 @@ If you've never used Home Connect with Hubitat before, follow these steps:
 
 1. Go to [Home Connect Developer Portal](https://developer.home-connect.com)
 2. Sign up for a developer account (free)
-3. Click **Applications** → **Register Application** and fill in:
+3. **Important**: Before creating an application, you may need to set up a **Default Home Connect Account for Testing** in your developer profile. Go to your profile settings and add your Home Connect account email.
+4. Click **Applications** → **Register Application** and fill in:
    - **Application ID**: Choose a unique name (e.g., `hubitat-yourname`)
    - **OAuth Flow**: Select **Authorization Code Grant Flow**
-   - **Home Connect User Account for Testing**: Leave blank
-   - **Redirect URI**: Leave blank for now (we'll add this in Step 4)
+   - **Home Connect User Account for Testing**: Leave blank (uses your profile default)
+   - **Redirect URI**: Enter a placeholder like `https://cloud.hubitat.com/oauth/callback` for now (we'll update this in Step 4 with your actual URI)
    - **One Time Token**: Leave unchecked
    - **Sync to China**: Leave unchecked
    - Click **Save**
-4. After saving, your **Client ID** and **Client Secret** will be displayed - note these for the next step
+5. After saving, your **Client ID** and **Client Secret** will be displayed - note these for the next step
 
 #### Step 2: Install the Integration
 
