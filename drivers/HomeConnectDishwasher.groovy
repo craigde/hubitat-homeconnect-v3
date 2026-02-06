@@ -77,6 +77,9 @@
  *                     cyclePhase now shows "Idle" when dishwasher is Ready/Inactive
  *                     activeProgram now clears to "None" when cycle ends
  *                     Improves automation reliability for webCoRE and Rule Machine
+ *  3.1.5  2026-02-06  Initialize RinseAidNearlyEmpty and SaltNearlyEmpty attributes to "Off"
+ *                     Attributes now visible immediately instead of waiting for first event
+ *                     Existing users can run Initialize to populate these attributes
  */
 
 import groovy.json.JsonSlurper
@@ -276,7 +279,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.4"
+@Field static final String DRIVER_VERSION = "3.1.5"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -288,7 +291,12 @@ def installed() {
     initializeState()
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
     sendEvent(name: "eventPresentState", value: "Off")
-    
+
+    // Initialize consumable status attributes with default values
+    // These are event-based and only update when the appliance reports a change
+    sendEvent(name: "RinseAidNearlyEmpty", value: "Off")
+    sendEvent(name: "SaltNearlyEmpty", value: "Off")
+
     // Configure pushable button for notifications
     // Button 1: Cycle Complete
     // Button 2: Salt Low Alert
@@ -324,6 +332,15 @@ def initialize() {
     logInfo("Initializing")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
     initializeState()
+
+    // Ensure consumable status attributes exist (for existing installations)
+    if (device.currentValue("RinseAidNearlyEmpty") == null) {
+        sendEvent(name: "RinseAidNearlyEmpty", value: "Off")
+    }
+    if (device.currentValue("SaltNearlyEmpty") == null) {
+        sendEvent(name: "SaltNearlyEmpty", value: "Off")
+    }
+
     parent?.initializeStatus(device)
     runIn(5, "getAvailablePrograms")
 }
