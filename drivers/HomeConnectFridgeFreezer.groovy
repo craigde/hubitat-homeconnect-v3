@@ -44,6 +44,9 @@
  *                     Added bounds checking for all substring operations
  *                     Added null validation in API callbacks and list iterations
  *                     Significantly improved stability and fault tolerance
+ *  3.1.1  2026-02-06  Added individual contact attributes for Rule Machine compatibility
+ *                     fridgeContact, freezerContact, flexZoneContact use "open"/"closed" values
+ *                     Allows triggering rules on specific compartment doors
  */
 
 import groovy.json.JsonSlurper
@@ -131,6 +134,7 @@ metadata {
         attribute "fridgeTemperature", "number"
         attribute "fridgeTargetTemperature", "number"
         attribute "fridgeDoorState", "string"
+        attribute "fridgeContact", "string"         // "open"/"closed" for Rule Machine
 
         // =====================================================================
         // ATTRIBUTES - Freezer Compartment
@@ -139,6 +143,7 @@ metadata {
         attribute "freezerTemperature", "number"
         attribute "freezerTargetTemperature", "number"
         attribute "freezerDoorState", "string"
+        attribute "freezerContact", "string"        // "open"/"closed" for Rule Machine
 
         // =====================================================================
         // ATTRIBUTES - Additional Compartments
@@ -147,6 +152,7 @@ metadata {
         attribute "flexZoneTemperature", "number"
         attribute "flexZoneTargetTemperature", "number"
         attribute "flexZoneDoorState", "string"
+        attribute "flexZoneContact", "string"       // "open"/"closed" for Rule Machine
         attribute "bottleCoolerTemperature", "number"
         attribute "chillZoneTemperature", "number"
 
@@ -250,7 +256,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.0"
+@Field static final String DRIVER_VERSION = "3.1.1"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 // =============================================================================
@@ -730,6 +736,7 @@ def parseEvent(Map evt) {
         case "Refrigeration.Common.Status.Door.Refrigerator":
             def doorState = extractEnum(evt.value)
             sendEvent(name: "fridgeDoorState", value: doorState)
+            sendEvent(name: "fridgeContact", value: (doorState == "Open" ? "open" : "closed"))
             updateDoorStatus()
             updateJsonState()
             break
@@ -737,6 +744,7 @@ def parseEvent(Map evt) {
         case "Refrigeration.Common.Status.Door.Freezer":
             def doorState = extractEnum(evt.value)
             sendEvent(name: "freezerDoorState", value: doorState)
+            sendEvent(name: "freezerContact", value: (doorState == "Open" ? "open" : "closed"))
             updateDoorStatus()
             updateJsonState()
             break
@@ -744,6 +752,7 @@ def parseEvent(Map evt) {
         case "Refrigeration.Common.Status.Door.FlexZone":
             def doorState = extractEnum(evt.value)
             sendEvent(name: "flexZoneDoorState", value: doorState)
+            sendEvent(name: "flexZoneContact", value: (doorState == "Open" ? "open" : "closed"))
             updateDoorStatus()
             break
 
