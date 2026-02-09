@@ -47,6 +47,9 @@
  *  3.1.1  2026-02-06  Added individual contact attributes for Rule Machine compatibility
  *                     fridgeContact, freezerContact, flexZoneContact use "open"/"closed" values
  *                     Allows triggering rules on specific compartment doors
+ *  3.1.2  2026-02-09  Added support for additional door types (ChillerLeft, ChillerRight, FlexCompartment)
+ *                     Added chillerLeftContact, chillerRightContact, flexCompartmentContact attributes
+ *                     Updated aggregate contact to include all door types
  */
 
 import groovy.json.JsonSlurper
@@ -148,11 +151,17 @@ metadata {
         // =====================================================================
         // ATTRIBUTES - Additional Compartments
         // =====================================================================
-        
+
         attribute "flexZoneTemperature", "number"
         attribute "flexZoneTargetTemperature", "number"
         attribute "flexZoneDoorState", "string"
         attribute "flexZoneContact", "string"       // "open"/"closed" for Rule Machine
+        attribute "flexCompartmentDoorState", "string"
+        attribute "flexCompartmentContact", "string"
+        attribute "chillerLeftDoorState", "string"
+        attribute "chillerLeftContact", "string"
+        attribute "chillerRightDoorState", "string"
+        attribute "chillerRightContact", "string"
         attribute "bottleCoolerTemperature", "number"
         attribute "chillZoneTemperature", "number"
 
@@ -256,7 +265,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.1"
+@Field static final String DRIVER_VERSION = "3.1.2"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 // =============================================================================
@@ -754,6 +763,31 @@ def parseEvent(Map evt) {
             sendEvent(name: "flexZoneDoorState", value: doorState)
             sendEvent(name: "flexZoneContact", value: (doorState == "Open" ? "open" : "closed"))
             updateDoorStatus()
+            updateJsonState()
+            break
+
+        case "Refrigeration.Common.Status.Door.FlexCompartment":
+            def doorState = extractEnum(evt.value)
+            sendEvent(name: "flexCompartmentDoorState", value: doorState)
+            sendEvent(name: "flexCompartmentContact", value: (doorState == "Open" ? "open" : "closed"))
+            updateDoorStatus()
+            updateJsonState()
+            break
+
+        case "Refrigeration.Common.Status.Door.ChillerLeft":
+            def doorState = extractEnum(evt.value)
+            sendEvent(name: "chillerLeftDoorState", value: doorState)
+            sendEvent(name: "chillerLeftContact", value: (doorState == "Open" ? "open" : "closed"))
+            updateDoorStatus()
+            updateJsonState()
+            break
+
+        case "Refrigeration.Common.Status.Door.ChillerRight":
+            def doorState = extractEnum(evt.value)
+            sendEvent(name: "chillerRightDoorState", value: doorState)
+            sendEvent(name: "chillerRightContact", value: (doorState == "Open" ? "open" : "closed"))
+            updateDoorStatus()
+            updateJsonState()
             break
 
         // Super modes
@@ -891,11 +925,16 @@ private void updateDoorStatus() {
     def fridgeDoor = device.currentValue("fridgeDoorState")
     def freezerDoor = device.currentValue("freezerDoorState")
     def flexDoor = device.currentValue("flexZoneDoorState")
+    def flexCompartment = device.currentValue("flexCompartmentDoorState")
+    def chillerLeft = device.currentValue("chillerLeftDoorState")
+    def chillerRight = device.currentValue("chillerRightDoorState")
     def mainDoor = device.currentValue("doorState")
-    
-    def anyOpen = (fridgeDoor == "Open" || freezerDoor == "Open" || 
-                   flexDoor == "Open" || mainDoor == "Open")
-    
+
+    def anyOpen = (fridgeDoor == "Open" || freezerDoor == "Open" ||
+                   flexDoor == "Open" || flexCompartment == "Open" ||
+                   chillerLeft == "Open" || chillerRight == "Open" ||
+                   mainDoor == "Open")
+
     sendEvent(name: "anyDoorOpen", value: anyOpen.toString())
     sendEvent(name: "contact", value: anyOpen ? "open" : "closed")
 }
