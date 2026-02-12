@@ -812,9 +812,8 @@ def apiPut(String path, Map data, Closure closure) {
             // Extract rate limit headers
             extractRateLimitHeaders(response)
             
-            if (response.data) {
-                closure(response.data)
-            }
+            // Always call closure - successful PUT may return 204 No Content with empty body
+            closure(response.data ?: [status: response.status])
         }
     } catch (groovyx.net.http.HttpResponseException e) {
         handleHttpError("PUT", path, e, closure)
@@ -863,9 +862,8 @@ def apiDelete(String path, Closure closure) {
             // Extract rate limit headers
             extractRateLimitHeaders(response)
             
-            if (response.data) {
-                closure(response.data)
-            }
+            // Always call closure - successful DELETE may return 204 No Content with empty body
+            closure(response.data ?: [status: response.status])
         }
     } catch (groovyx.net.http.HttpResponseException e) {
         handleHttpError("DELETE", path, e, closure)
