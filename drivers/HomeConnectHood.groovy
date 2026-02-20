@@ -54,6 +54,9 @@
  *  3.2.1  2026-02-03  Added FanControl compatibility for medium-low, medium-high, on speeds
  *                     Setting light brightness to 0 now turns off the light
  *                     Setting light brightness > 0 ensures light is turned on
+ *  3.2.2  2026-02-20  Auto-initialize on driver code update
+ *                     updated() now detects version change and calls initialize()
+ *                     Eliminates need to manually click Initialize after HPM update
  */
 
 import groovy.json.JsonSlurper
@@ -252,7 +255,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.2.1"
+@Field static final String DRIVER_VERSION = "3.2.2"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map FAN_SPEEDS = [
@@ -298,7 +301,12 @@ def installed() {
 
 def updated() {
     log.info "${device.displayName}: Updated"
+    def previousVersion = device.currentValue("driverVersion")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+    if (previousVersion != DRIVER_VERSION) {
+        logInfo("Driver updated from ${previousVersion} to ${DRIVER_VERSION}, re-initializing")
+        runIn(1, "initialize")
+    }
     if (state.discoveredKeys == null) initializeState()
 }
 

@@ -86,6 +86,12 @@
  *                     Batch operations (z_parseStatus, z_parseSettings, z_parseActiveProgram)
  *                     now defer JSON state update to ensure all events have persisted
  *                     Fixed z_parseActiveProgram not updating jsonState at all
+ *  3.1.7  2026-02-20  Auto-initialize on driver code update
+ *                     updated() now detects version change and calls initialize()
+ *                     Eliminates need to manually click Initialize after HPM update
+ *                     Added elapsed time calculation when appliance doesn't send it via SSE
+ *                     Tracks program start time and calculates elapsed = now() - startTime
+ *                     Appliances that do send ElapsedProgramTime still use the real value
  */
 
 import groovy.json.JsonSlurper
@@ -285,7 +291,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.6"
+@Field static final String DRIVER_VERSION = "3.1.7"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -313,8 +319,13 @@ def installed() {
 
 def updated() {
     log.info "${device.displayName}: Updated"
+    def previousVersion = device.currentValue("driverVersion")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
-    
+    if (previousVersion != DRIVER_VERSION) {
+        logInfo("Driver updated from ${previousVersion} to ${DRIVER_VERSION}, re-initializing")
+        runIn(1, "initialize")
+    }
+
     // Initialize state if needed
     if (state.discoveredKeys == null) {
         initializeState()
@@ -949,6 +960,13 @@ def parseEvent(Map evt) {
                 sendAlert("Error", "Dishwasher reported an error")
             }
             
+            // Track program start time for elapsed time calculation
+            if (opState == "Run" && previousState != "Run") {
+                state.programStartTime = now()
+                state.receivedElapsedTime = false
+                logDebug("Program started - tracking start time for elapsed calculation")
+            }
+
             // Reset timers when program ends
             if (opState in ["Ready", "Inactive", "Finished"]) {
                 resetProgramState()
@@ -1008,6 +1026,7 @@ def parseEvent(Map evt) {
 
         case "BSH.Common.Option.ElapsedProgramTime":
             Integer sec = safeToInteger(evt.value)
+            state.receivedElapsedTime = true
             sendEvent(name: "elapsedProgramTime", value: sec)
             sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(sec))
             updateJsonState()
@@ -1129,6 +1148,8 @@ private boolean shouldUpdateTiming(Integer newValue) {
  */
 private void resetProgramState() {
     logDebug("Resetting program state")
+    state.programStartTime = null
+    state.receivedElapsedTime = false
     sendEvent(name: "remainingProgramTime", value: 0)
     sendEvent(name: "remainingProgramTimeFormatted", value: "00:00")
     sendEvent(name: "elapsedProgramTime", value: 0)
@@ -1164,6 +1185,13 @@ private void updateDerivedState() {
             sendEvent(name: "estimatedEndTimeFormatted", value: endFormatted)
         } else if (opState != "Run") {
             sendEvent(name: "estimatedEndTimeFormatted", value: "")
+        }
+
+        // Calculate elapsed time if appliance doesn't send it via SSE
+        if (opState == "Run" && !state.receivedElapsedTime && state.programStartTime) {
+            Integer elapsedSec = ((now() - state.programStartTime) / 1000).toInteger()
+            sendEvent(name: "elapsedProgramTime", value: elapsedSec)
+            sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(elapsedSec))
         }
 
         // Determine cycle phase based on progress

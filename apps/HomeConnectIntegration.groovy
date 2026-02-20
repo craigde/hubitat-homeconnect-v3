@@ -597,8 +597,8 @@ def refreshAllDeviceStatus() {
     getChildDevices().each { child ->
         if (child.deviceNetworkId != STREAM_DRIVER_DNI) {
             try {
-                // Use checkActiveProgram=false to minimize API calls
-                initializeStatus(child, false)
+                // Fetch status and active program for complete state recovery
+                initializeStatus(child, true)
             } catch (Exception e) {
                 logWarn("Failed to refresh ${child.displayName}: ${e.message}")
             }

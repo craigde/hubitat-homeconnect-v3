@@ -103,6 +103,11 @@
  *                     3 minutes, the watchdog forces a reconnect automatically
  *                     Fixes issue where SSE connection drops silently and events stop
  *                     Added message buffer overflow protection (10KB limit)
+ *  3.3.1  2026-02-20  Auto-initialize on driver code update
+ *                     updated() now detects version change and calls initialize()
+ *                     Eliminates need to manually click Initialize after HPM update
+ *                     Always refresh device status on reconnect (removed 5-min threshold)
+ *                     Fetch active program on reconnect for complete state recovery
  */
 
 import groovy.json.JsonSlurper
@@ -151,7 +156,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.0"
+@Field static final String DRIVER_VERSION = "3.3.1"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -183,7 +188,12 @@ def installed() {
 
 def updated() {
     log.info "Home Connect Stream Driver v3 updated"
+    def previousVersion = device.currentValue("driverVersion")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+    if (previousVersion != DRIVER_VERSION) {
+        logInfo("Driver updated from ${previousVersion} to ${DRIVER_VERSION}, re-initializing")
+        runIn(1, "initialize")
+    }
 }
 
 /**
@@ -406,12 +416,11 @@ def eventStreamStatus(String status) {
         unschedule("streamWatchdog")
         runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
 
-        // Refresh device status if we were disconnected for more than 5 minutes
+        // Always refresh device status on reconnect to recover any missed events
         def previousDisconnectTime = state.lastDisconnectTime ?: 0
-        def disconnectedDuration = now() - previousDisconnectTime
-
-        if (previousDisconnectTime > 0 && disconnectedDuration > 300000) {
-            logInfo("Was disconnected for ${(disconnectedDuration/1000).toInteger()}s - refreshing device status")
+        if (previousDisconnectTime > 0) {
+            def disconnectedDuration = now() - previousDisconnectTime
+            logInfo("Reconnected after ${(disconnectedDuration/1000).toInteger()}s - refreshing device status")
             runIn(2, "notifyParentReconnected")
         }
 
