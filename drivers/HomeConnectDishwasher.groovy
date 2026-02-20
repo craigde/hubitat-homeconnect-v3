@@ -95,6 +95,11 @@
  *  3.1.8  2026-02-20  Fixed elapsed time not populating when driver updated mid-cycle
  *                     Back-calculates programStartTime from progress% and remaining time
  *                     Handles edge case where OperationState is already "Run" at init
+ *  3.1.9  2026-02-20  Fixed derived states not updating when operationState is null
+ *                     Infers Run state from active timing values (progress > 0, remaining > 0)
+ *                     Seeds programStartTime from derived state when missing
+ *                     Deferred jsonState and derived state updates for SSE events
+ *                     Ensures sendEvent values persist before device.currentValue() is read
  */
 
 import groovy.json.JsonSlurper
@@ -294,7 +299,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.8"
+@Field static final String DRIVER_VERSION = "3.1.9"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -992,8 +997,7 @@ def parseEvent(Map evt) {
             if (opState in ["Ready", "Inactive", "Finished"]) {
                 resetProgramState()
             }
-            updateDerivedState()
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         // ===== Door State =====
@@ -1001,25 +1005,25 @@ def parseEvent(Map evt) {
             def doorState = extractEnum(evt.value)
             sendEvent(name: "doorState", value: doorState)
             sendEvent(name: "contact", value: (doorState == "Open" ? "open" : "closed"))
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         // ===== Interior Light =====
         case "BSH.Common.Status.InteriorIlluminationActive":
             def lightState = evt.value ? "on" : "off"
             sendEvent(name: "interiorLight", value: lightState, descriptionText: "Interior light is ${lightState}")
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         // ===== Remote/Local Control =====
         case "BSH.Common.Status.RemoteControlStartAllowed":
             sendEvent(name: "remoteControlStartAllowed", value: evt.value.toString())
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         case "BSH.Common.Status.RemoteControlActive":
             sendEvent(name: "remoteControlActive", value: evt.value.toString())
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         case "BSH.Common.Status.LocalControlActive":
@@ -1031,7 +1035,7 @@ def parseEvent(Map evt) {
             def power = extractEnum(evt.value)
             sendEvent(name: "powerState", value: power)
             sendEvent(name: "switch", value: (power == "On" ? "on" : "off"))
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         // ===== Timing =====
@@ -1040,8 +1044,7 @@ def parseEvent(Map evt) {
             if (shouldUpdateTiming(sec)) {
                 sendEvent(name: "remainingProgramTime", value: sec)
                 sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(sec))
-                updateDerivedState()
-                updateJsonState()
+                runIn(1, "deferredJsonStateUpdate")
             }
             break
 
@@ -1050,15 +1053,14 @@ def parseEvent(Map evt) {
             state.receivedElapsedTime = true
             sendEvent(name: "elapsedProgramTime", value: sec)
             sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(sec))
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         case "BSH.Common.Option.ProgramProgress":
             Integer progress = safeToInteger(evt.value)
             sendEvent(name: "programProgress", value: progress)
             sendEvent(name: "progressBar", value: "${progress}%")
-            updateDerivedState()
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         case "BSH.Common.Option.StartInRelative":
@@ -1069,12 +1071,12 @@ def parseEvent(Map evt) {
         // ===== Programs =====
         case "BSH.Common.Root.ActiveProgram":
             sendEvent(name: "activeProgram", value: evt.displayvalue ?: extractEnum(evt.value))
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         case "BSH.Common.Root.SelectedProgram":
             sendEvent(name: "selectedProgram", value: evt.displayvalue ?: extractEnum(evt.value))
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         // ===== Dishwasher-Specific Options =====
@@ -1094,7 +1096,7 @@ def parseEvent(Map evt) {
                 sendEvent(name: "pushed", value: 3, isStateChange: true, descriptionText: "Rinse aid low")
                 sendAlert("RinseAidLow", "Rinse aid is nearly empty")
             }
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         case "Dishcare.Dishwasher.Event.SaltNearlyEmpty":
@@ -1105,7 +1107,7 @@ def parseEvent(Map evt) {
                 sendEvent(name: "pushed", value: 2, isStateChange: true, descriptionText: "Salt low")
                 sendAlert("SaltLow", "Salt is nearly empty")
             }
-            updateJsonState()
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         // ===== Program Finished Event =====
@@ -1197,6 +1199,24 @@ private void updateDerivedState() {
         String opState = device.currentValue("operationState") as String
         Integer remainingSec = device.currentValue("remainingProgramTime") as Integer
         Integer progress = device.currentValue("programProgress") as Integer
+
+        // Infer Run state if operationState is missing but timing values indicate active cycle
+        // This handles the case where the dishwasher was already running when the stream
+        // connected or after a driver update mid-cycle (no OperationState SSE event arrives)
+        if (!opState && remainingSec != null && remainingSec > 0 && progress != null && progress > 0) {
+            opState = "Run"
+            logDebug("Inferred operationState=Run from active timing values (progress=${progress}%, remaining=${remainingSec}s)")
+            sendEvent(name: "operationState", value: opState)
+        }
+
+        // Seed programStartTime if missing during Run state
+        if (opState == "Run" && !state.programStartTime && remainingSec != null && remainingSec > 0 && progress != null && progress > 0) {
+            Long estTotalSec = Math.round(remainingSec / ((100 - progress) / 100.0))
+            Long estElapsedMs = (estTotalSec - remainingSec) * 1000L
+            state.programStartTime = now() - estElapsedMs
+            state.receivedElapsedTime = false
+            logInfo("Seeded programStartTime from derived state (progress=${progress}%, remaining=${remainingSec}s)")
+        }
 
         // Calculate estimated end time
         if (remainingSec != null && remainingSec > 0 && opState == "Run") {

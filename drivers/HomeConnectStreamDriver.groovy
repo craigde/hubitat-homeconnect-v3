@@ -119,6 +119,9 @@
  *                     parse() chunks and empty calls represent blank-line delimiters.
  *                     Re-add line terminators so \n\n boundaries form and events reach
  *                     child devices.
+ *  3.3.16 2026-02-20  Handle bare JSON lines in SSE messages (Hubitat may deliver data
+ *                     without "data:" prefix). Fallback parsing ensures events are not
+ *                     silently dropped when the standard "data:" field is missing.
  */
 
 import groovy.json.JsonSlurper
@@ -170,7 +173,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.15"
+@Field static final String DRIVER_VERSION = "3.3.16"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -851,7 +854,16 @@ private void processSSEMessage(String message) {
             dataPayload = line.substring(5).trim()
         }
     }
-    
+
+    // Fallback: handle bare JSON lines (Hubitat may deliver data without "data:" prefix)
+    if (!dataPayload) {
+        message.split("\n").each { line ->
+            if (!dataPayload && line.startsWith("{")) {
+                dataPayload = line.trim()
+            }
+        }
+    }
+
     if (eventType && dataPayload) {
         logDebug("Event type: ${eventType}")
         processEventPayload(dataPayload, eventType)
