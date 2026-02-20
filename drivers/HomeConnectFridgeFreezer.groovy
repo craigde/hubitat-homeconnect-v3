@@ -50,6 +50,9 @@
  *  3.1.2  2026-02-09  Added support for additional door types (ChillerLeft, ChillerRight, FlexCompartment)
  *                     Added chillerLeftContact, chillerRightContact, flexCompartmentContact attributes
  *                     Updated aggregate contact to include all door types
+ *  3.1.3  2026-02-20  Auto-initialize on driver code update
+ *                     updated() now detects version change and calls initialize()
+ *                     Eliminates need to manually click Initialize after HPM update
  */
 
 import groovy.json.JsonSlurper
@@ -265,7 +268,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.2"
+@Field static final String DRIVER_VERSION = "3.1.3"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 // =============================================================================
@@ -290,7 +293,12 @@ def installed() {
 
 def updated() {
     log.info "${device.displayName}: Updated"
+    def previousVersion = device.currentValue("driverVersion")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+    if (previousVersion != DRIVER_VERSION) {
+        logInfo("Driver updated from ${previousVersion} to ${DRIVER_VERSION}, re-initializing")
+        runIn(1, "initialize")
+    }
     sendEvent(name: "temperatureUnit", value: settings?.temperatureUnit ?: "F")
     if (state.discoveredKeys == null) initializeState()
 }

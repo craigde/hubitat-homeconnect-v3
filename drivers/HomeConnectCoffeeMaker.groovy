@@ -40,6 +40,9 @@
  *                     Significantly improved stability and fault tolerance
  *  3.1.1  2026-01-23  Added handler for BSH.Common.Event.ProgramFinished event
  *                     Eliminates "UNHANDLED SIGNIFICANT EVENT" messages for program completion
+ *  3.1.2  2026-02-20  Auto-initialize on driver code update
+ *                     updated() now detects version change and calls initialize()
+ *                     Eliminates need to manually click Initialize after HPM update
  */
 
 import groovy.json.JsonSlurper
@@ -255,7 +258,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.1"
+@Field static final String DRIVER_VERSION = "3.1.2"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map BEVERAGE_PROGRAMS = [
@@ -311,7 +314,12 @@ def installed() {
 
 def updated() {
     log.info "${device.displayName}: Updated"
+    def previousVersion = device.currentValue("driverVersion")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+    if (previousVersion != DRIVER_VERSION) {
+        logInfo("Driver updated from ${previousVersion} to ${DRIVER_VERSION}, re-initializing")
+        runIn(1, "initialize")
+    }
     if (state.discoveredKeys == null) initializeState()
 }
 
