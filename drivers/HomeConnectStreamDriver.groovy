@@ -115,6 +115,10 @@
  *  3.3.15 2026-02-20  Fix watchdog failing to detect dead stream when state.lastParseTime
  *                     is null (Hubitat state loss). Falls back to lastRealEventTime or
  *                     connectionStartTime so the timeout check always works.
+ *                     Fix SSE buffer not processing messages: Hubitat strips newlines from
+ *                     parse() chunks and empty calls represent blank-line delimiters.
+ *                     Re-add line terminators so \n\n boundaries form and events reach
+ *                     child devices.
  */
 
 import groovy.json.JsonSlurper
@@ -711,13 +715,11 @@ private void handleFollowUpRequestsError(String status) {
  * Data may arrive in fragments, so we buffer until we have complete messages
  */
 def parse(String text) {
-    if (!text) return
-    
     // Ignore data if rate limited (prevents processing error responses)
     if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
         return
     }
-    
+
     logDebug("Raw SSE data: ${text?.take(200)}${text?.length() > 200 ? '...' : ''}")
 
     // Track last parse time for stream health watchdog
@@ -725,15 +727,18 @@ def parse(String text) {
 
     // Update lastEventReceived timestamp on any incoming data
     updateLastEventReceived()
-    
+
     // Check for rate limit error in the stream
-    if (text.contains('"key": "429"') || text.contains('"key":"429"') || text.contains("rate limit")) {
+    if (text && (text.contains('"key": "429"') || text.contains('"key":"429"') || text.contains("rate limit"))) {
         handleRateLimitError(text)
         return
     }
-    
+
     // Buffer incoming data (SSE messages may span multiple parse() calls)
-    messageBuffer += text
+    // Hubitat's eventStream calls parse() once per line with newlines stripped.
+    // Re-add line terminators so SSE message boundaries (\n\n) are properly formed.
+    // Empty parse() calls represent SSE blank-line delimiters — do NOT discard them.
+    messageBuffer += (text ?: "") + "\n"
 
     // Process complete messages (SSE messages are separated by double newlines)
     while (messageBuffer.contains("\n\n")) {
