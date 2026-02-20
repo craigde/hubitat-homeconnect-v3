@@ -108,6 +108,10 @@
  *                     Eliminates need to manually click Initialize after HPM update
  *                     Always refresh device status on reconnect (removed 5-min threshold)
  *                     Fetch active program on reconnect for complete state recovery
+ *  3.3.2  2026-02-20  Added verbose stream diagnostics toggle for debugging stale events
+ *                     Tracks per-appliance last event times to identify which appliance stops
+ *                     Watchdog now logs detailed stream health: KEEP-ALIVE vs real event gaps
+ *                     Added showStreamHealth command for on-demand diagnostics
  */
 
 import groovy.json.JsonSlurper
@@ -129,6 +133,7 @@ metadata {
         command "reconnect", [[name: "Reconnect", type: "STRING", description: "Disconnect and reconnect to refresh stream"]]
         command "showEventStats", [[name: "Show Event Statistics", type: "STRING", description: "Display event statistics for diagnostics"]]
         command "clearEventStats", [[name: "Clear Event Statistics", type: "STRING", description: "Clear event statistics"]]
+        command "showStreamHealth", [[name: "Show Stream Health", type: "STRING", description: "Show detailed stream health diagnostics"]]
 
         // Internal command (z_ prefix convention)
         command "z_deviceLog", [[name: "level", type: "STRING"], [name: "msg", type: "STRING"]]
@@ -147,6 +152,8 @@ metadata {
     preferences {
         input name: "debugLogging", type: "bool", title: "Enable debug logging", defaultValue: false,
               description: "Enable detailed logging for troubleshooting. Disable for normal operation."
+        input name: "verboseStreamDiag", type: "bool", title: "Enable verbose stream diagnostics", defaultValue: false,
+              description: "Logs detailed stream health: per-appliance event times, KEEP-ALIVE vs real event gaps. Toggle on to diagnose stale event issues."
     }
 }
 
@@ -156,7 +163,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.1"
+@Field static final String DRIVER_VERSION = "3.3.2"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -377,6 +384,19 @@ def clearEventStats() {
     state.eventStats = [:]
     state.lastRealEventTime = null
     state.lastRealEventType = null
+    state.applianceLastEventTime = [:]
+    state.applianceLastEventType = [:]
+    state.applianceLastEventKey = [:]
+}
+
+/**
+ * Shows detailed stream health diagnostics on demand.
+ * Can be run at any time from the device page to see current stream status.
+ */
+def showStreamHealth() {
+    def lastParse = state.lastParseTime ?: 0
+    def parseElapsed = lastParse > 0 ? (now() - lastParse) : -1
+    logStreamHealthDiagnostics(parseElapsed >= 0 ? parseElapsed : 0)
 }
 
 /* ===========================================================================================================
@@ -527,9 +547,60 @@ def streamWatchdog() {
         runIn(5, "connect")
     } else {
         logDebug("Stream watchdog: stream healthy (last data ${(elapsed / 1000).toInteger()}s ago)")
+
+        // Verbose diagnostics: log detailed stream health
+        if (settings?.verboseStreamDiag) {
+            logStreamHealthDiagnostics(elapsed)
+        }
+
         // Schedule next watchdog check
         runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
     }
+}
+
+/**
+ * Logs detailed stream health diagnostics when verbose mode is enabled.
+ * Called from streamWatchdog() to help diagnose stale event issues.
+ */
+private void logStreamHealthDiagnostics(long parseElapsedMs) {
+    def lastRealEvent = state.lastRealEventTime ?: 0
+    def realEventElapsed = lastRealEvent > 0 ? (now() - lastRealEvent) : -1
+    def keepAliveCount = state.eventStats?.get("KEEP-ALIVE") ?: 0
+    def connectionAge = state.connectionStartTime ? (now() - state.connectionStartTime) : 0
+
+    logInfo("=== STREAM HEALTH DIAGNOSTICS ===")
+    logInfo("Connection age: ${(connectionAge / 1000).toInteger()}s")
+    logInfo("Last ANY data (parse): ${(parseElapsedMs / 1000).toInteger()}s ago")
+    if (realEventElapsed >= 0) {
+        logInfo("Last REAL event: ${(realEventElapsed / 1000).toInteger()}s ago (type: ${state.lastRealEventType ?: 'unknown'})")
+    } else {
+        logInfo("Last REAL event: NEVER (only KEEP-ALIVEs received)")
+    }
+    logInfo("KEEP-ALIVE count: ${keepAliveCount}")
+    logInfo("Buffer size: ${messageBuffer?.length() ?: 0} chars")
+
+    // Per-appliance event tracking
+    def applianceEvents = state.applianceLastEventTime
+    if (applianceEvents) {
+        logInfo("--- Per-Appliance Last Event ---")
+        applianceEvents.each { haId, timestamp ->
+            def ago = ((now() - timestamp) / 1000).toInteger()
+            def lastType = state.applianceLastEventType?.get(haId) ?: "unknown"
+            def lastKey = state.applianceLastEventKey?.get(haId) ?: "unknown"
+            logInfo("  ${haId}: ${ago}s ago [${lastType}] ${lastKey}")
+        }
+    } else {
+        logInfo("Per-appliance tracking: no data yet")
+    }
+
+    // Event type breakdown
+    if (state.eventStats) {
+        logInfo("--- Event Type Counts ---")
+        state.eventStats.each { type, count ->
+            logInfo("  ${type}: ${count}")
+        }
+    }
+    logInfo("=================================")
 }
 
 /**
@@ -679,6 +750,20 @@ private void updateEventStats(String eventType) {
 }
 
 /**
+ * Tracks per-appliance event timing for diagnostics.
+ * Records the last event time, type, and key for each appliance (haId).
+ */
+private void trackApplianceEvent(String haId, String eventType, String eventKey) {
+    if (!state.applianceLastEventTime) state.applianceLastEventTime = [:]
+    if (!state.applianceLastEventType) state.applianceLastEventType = [:]
+    if (!state.applianceLastEventKey) state.applianceLastEventKey = [:]
+
+    state.applianceLastEventTime[haId] = now()
+    state.applianceLastEventType[haId] = eventType
+    state.applianceLastEventKey[haId] = eventKey
+}
+
+/**
  * Handles rate limit (429) errors from the SSE stream
  * Extracts the retry time and schedules automatic reconnection
  */
@@ -760,6 +845,11 @@ private void processEventPayload(String payload, String eventType = null) {
         if (eventType == "KEEP-ALIVE") {
             logDebug("Keep-alive received for appliance ${haId}")
             updateEventStats("KEEP-ALIVE")
+            if (settings?.verboseStreamDiag) {
+                def lastReal = state.applianceLastEventTime?.get(haId)
+                def gap = lastReal ? "${((now() - lastReal) / 1000).toInteger()}s" : "never"
+                logDebug("KEEP-ALIVE for ${haId} (last real event: ${gap} ago)")
+            }
             return
         }
 
@@ -767,6 +857,7 @@ private void processEventPayload(String payload, String eventType = null) {
         if (eventType == "DISCONNECTED" || eventType == "CONNECTED") {
             logInfo("Appliance ${haId} is now ${eventType}")
             updateEventStats(eventType)
+            trackApplianceEvent(haId, eventType, eventType)
             parent?.handleApplianceConnectionEvent(haId, eventType)
             return
         }
@@ -786,6 +877,7 @@ private void processEventPayload(String payload, String eventType = null) {
 
                 logInfo("Received event: ${eventType} - ${item.key} = ${item.value} for ${haId}")
                 updateEventStats(eventType ?: "STATUS")
+                trackApplianceEvent(haId, eventType ?: "STATUS", item.key)
                 parent?.handleApplianceEvent(evt)
             }
         } else {
