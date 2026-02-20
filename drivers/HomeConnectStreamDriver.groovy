@@ -211,6 +211,11 @@ def updated() {
 def initialize() {
     logInfo("Initializing Home Connect Stream Driver v${DRIVER_VERSION}")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+
+    // Always ensure watchdog is running (even if already connected)
+    unschedule("streamWatchdog")
+    runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
+
     connect()
 }
 
