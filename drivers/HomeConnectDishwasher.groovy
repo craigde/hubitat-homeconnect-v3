@@ -92,6 +92,9 @@
  *                     Added elapsed time calculation when appliance doesn't send it via SSE
  *                     Tracks program start time and calculates elapsed = now() - startTime
  *                     Appliances that do send ElapsedProgramTime still use the real value
+ *  3.1.8  2026-02-20  Fixed elapsed time not populating when driver updated mid-cycle
+ *                     Back-calculates programStartTime from progress% and remaining time
+ *                     Handles edge case where OperationState is already "Run" at init
  */
 
 import groovy.json.JsonSlurper
@@ -291,7 +294,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.7"
+@Field static final String DRIVER_VERSION = "3.1.8"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -965,6 +968,24 @@ def parseEvent(Map evt) {
                 state.programStartTime = now()
                 state.receivedElapsedTime = false
                 logDebug("Program started - tracking start time for elapsed calculation")
+            }
+
+            // Seed programStartTime for already-running cycles (e.g. after driver update/initialize)
+            if (opState == "Run" && !state.programStartTime) {
+                Integer remainingSec = device.currentValue("remainingProgramTime") as Integer
+                Integer progress    = device.currentValue("programProgress") as Integer
+                if (progress != null && progress > 0 && remainingSec != null && remainingSec > 0) {
+                    // Estimate total duration from progress + remaining, then back-calculate start
+                    Long estTotalSec  = Math.round(remainingSec / ((100 - progress) / 100.0))
+                    Long estElapsedMs = (estTotalSec - remainingSec) * 1000L
+                    state.programStartTime = now() - estElapsedMs
+                    logInfo("Seeded programStartTime from progress (${progress}%) and remaining (${remainingSec}s)")
+                } else {
+                    // No progress/remaining data yet — just start from now
+                    state.programStartTime = now()
+                    logInfo("Seeded programStartTime to now() (no progress data available)")
+                }
+                state.receivedElapsedTime = false
             }
 
             // Reset timers when program ends
