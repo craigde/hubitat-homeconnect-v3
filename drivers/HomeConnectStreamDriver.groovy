@@ -98,6 +98,11 @@
  *  3.2.9  2026-02-20  Fixed double-processing of SSE events in parse() method
  *                     Removed redundant single-line data: handler that could cause
  *                     duplicate event delivery alongside the message buffer processing
+ *  3.3.0  2026-02-20  Added stream health watchdog to detect silently dead connections
+ *                     Home Connect sends KEEP-ALIVE every ~55s; if no data arrives for
+ *                     3 minutes, the watchdog forces a reconnect automatically
+ *                     Fixes issue where SSE connection drops silently and events stop
+ *                     Added message buffer overflow protection (10KB limit)
  */
 
 import groovy.json.JsonSlurper
@@ -146,12 +151,18 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.9"
+@Field static final String DRIVER_VERSION = "3.3.0"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
 @Field static final Integer MAX_RECONNECT_ATTEMPTS = 10       // Give up after this many failed attempts
 @Field static final Integer RATE_LIMIT_BUFFER = 300           // 5 minute buffer after rate limit expires
+
+// Stream health watchdog constants
+// Home Connect sends KEEP-ALIVE every ~55 seconds. If no data arrives for STREAM_TIMEOUT,
+// the connection is considered dead and will be automatically reconnected.
+@Field static final Integer STREAM_WATCHDOG_INTERVAL = 300    // Check stream health every 5 minutes
+@Field static final Integer STREAM_TIMEOUT = 180000           // 3 minutes without data = dead stream
 
 /**
  * Gets the API URL - can be overridden by parent app via z_setApiUrl
@@ -286,8 +297,9 @@ def connect() {
 def disconnect() {
     logInfo("Disconnecting from Home Connect event stream")
 
-    // Cancel any scheduled reconnection attempts
+    // Cancel any scheduled reconnection attempts and watchdog
     unschedule("connect")
+    unschedule("streamWatchdog")
 
     try {
         interfaces.eventStream.close()
@@ -387,7 +399,12 @@ def eventStreamStatus(String status) {
         state.reconnectAttempts = 0
         state.lastConnectTime = now()
         state.connectionStartTime = now()  // Track when connection established
+        state.lastParseTime = now()        // Initialize for watchdog
         state.processingDisconnect = false  // Clear disconnect processing flag
+
+        // Start stream health watchdog
+        unschedule("streamWatchdog")
+        runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
 
         // Refresh device status if we were disconnected for more than 5 minutes
         def previousDisconnectTime = state.lastDisconnectTime ?: 0
@@ -457,6 +474,53 @@ def eventStreamStatus(String status) {
 def notifyParentReconnected() {
     logInfo("Notifying parent to refresh device status")
     parent?.refreshAllDeviceStatus()
+}
+
+/**
+ * Stream health watchdog - detects silently dead SSE connections
+ *
+ * Home Connect sends KEEP-ALIVE heartbeats every ~55 seconds. If no data
+ * has arrived for STREAM_TIMEOUT (3 minutes), the connection is considered
+ * dead and will be automatically reconnected.
+ *
+ * This handles the case where the TCP connection drops silently without
+ * Hubitat detecting it (no STOP/ERROR event from eventStreamStatus).
+ */
+def streamWatchdog() {
+    def currentStatus = device.currentValue("connectionStatus")
+
+    // Only check if we think we're connected
+    if (currentStatus != "connected") {
+        logDebug("Stream watchdog: not connected (${currentStatus}) - skipping check")
+        return
+    }
+
+    def lastParse = state.lastParseTime ?: 0
+    def elapsed = now() - lastParse
+
+    if (lastParse > 0 && elapsed > STREAM_TIMEOUT) {
+        def elapsedSec = (elapsed / 1000).toInteger()
+        logWarn("Stream watchdog: no data received for ${elapsedSec}s - stream appears dead, forcing reconnect")
+        sendEvent(name: "connectionStatus", value: "disconnected - watchdog timeout")
+
+        // Force close and reconnect
+        try {
+            interfaces.eventStream.close()
+        } catch (Exception e) {
+            logDebug("Error closing dead stream: ${e.message}")
+        }
+
+        state.connectionSucceeded = false
+        state.processingDisconnect = false
+        messageBuffer = ""
+
+        // Reconnect after a brief pause
+        runIn(5, "connect")
+    } else {
+        logDebug("Stream watchdog: stream healthy (last data ${(elapsed / 1000).toInteger()}s ago)")
+        // Schedule next watchdog check
+        runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
+    }
 }
 
 /**
@@ -540,7 +604,10 @@ def parse(String text) {
     }
     
     logDebug("Raw SSE data: ${text?.take(200)}${text?.length() > 200 ? '...' : ''}")
-    
+
+    // Track last parse time for stream health watchdog
+    state.lastParseTime = now()
+
     // Update lastEventReceived timestamp on any incoming data
     updateLastEventReceived()
     
@@ -559,6 +626,12 @@ def parse(String text) {
         def message = messageBuffer.substring(0, idx)
         messageBuffer = messageBuffer.substring(idx + 2)
         processSSEMessage(message)
+    }
+
+    // Safety: prevent buffer from growing indefinitely if messages lack proper termination
+    if (messageBuffer.length() > 10000) {
+        logWarn("SSE message buffer exceeded 10KB (${messageBuffer.length()} chars) - clearing stale data")
+        messageBuffer = ""
     }
 }
 
