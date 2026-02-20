@@ -95,6 +95,9 @@
  *                     Extracts setting/option name from API path for context in messages
  *                     Changed 409 command rejection log level to WARN for visibility
  *                     Messages now clearly indicate what is not supported by the appliance
+ *  3.2.9  2026-02-20  Fixed double-processing of SSE events in parse() method
+ *                     Removed redundant single-line data: handler that could cause
+ *                     duplicate event delivery alongside the message buffer processing
  */
 
 import groovy.json.JsonSlurper
@@ -143,7 +146,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.2.8"
+@Field static final String DRIVER_VERSION = "3.2.9"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -549,21 +552,13 @@ def parse(String text) {
     
     // Buffer incoming data (SSE messages may span multiple parse() calls)
     messageBuffer += text
-    
+
     // Process complete messages (SSE messages are separated by double newlines)
     while (messageBuffer.contains("\n\n")) {
         def idx = messageBuffer.indexOf("\n\n")
         def message = messageBuffer.substring(0, idx)
         messageBuffer = messageBuffer.substring(idx + 2)
         processSSEMessage(message)
-    }
-    
-    // Also handle single data: lines for implementations that send them individually
-    if (text.startsWith("data:") && text.length() > 5) {
-        def payload = text.substring(5).trim()
-        if (payload && payload.startsWith("{")) {
-            processEventPayload(payload)
-        }
     }
 }
 
