@@ -81,6 +81,11 @@
  *                     Attributes now visible immediately instead of waiting for first event
  *                     Existing users can run Initialize to populate these attributes
  *                     Fixed getDefaultProgram() to skip "None" as a valid activeProgram
+ *  3.1.6  2026-02-20  Fixed jsonState showing stale values after status refresh
+ *                     sendEvent() may not persist before device.currentValue() is read
+ *                     Batch operations (z_parseStatus, z_parseSettings, z_parseActiveProgram)
+ *                     now defer JSON state update to ensure all events have persisted
+ *                     Fixed z_parseActiveProgram not updating jsonState at all
  */
 
 import groovy.json.JsonSlurper
@@ -280,7 +285,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.5"
+@Field static final String DRIVER_VERSION = "3.1.6"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -762,6 +767,8 @@ def z_parseStatus(String json) {
     def list = safeJsonParse(json, [])
     if (list) {
         parseItemList(list)
+        // Defer JSON state update to ensure all sendEvent() calls have persisted
+        runIn(1, "deferredJsonStateUpdate")
     }
 }
 
@@ -774,6 +781,8 @@ def z_parseSettings(String json) {
     def list = safeJsonParse(json, [])
     if (list) {
         parseItemList(list)
+        // Defer JSON state update to ensure all sendEvent() calls have persisted
+        runIn(1, "deferredJsonStateUpdate")
     }
 }
 
@@ -846,8 +855,10 @@ def z_parseActiveProgram(String json) {
     if (options instanceof List) {
         parseItemList(options)
     }
-    
+
     updateDerivedState()
+    // Defer JSON state update to ensure all sendEvent() calls have persisted
+    runIn(1, "deferredJsonStateUpdate")
 }
 
 /**
@@ -1235,6 +1246,15 @@ private void sendAlert(String alertType, String message) {
 /* ===========================================================================================================
    JSON STATE FOR NODE-RED
    =========================================================================================================== */
+
+/**
+ * Deferred JSON state update - called via runIn() after batch event processing
+ * Ensures all sendEvent() calls have persisted before reading device.currentValue()
+ */
+def deferredJsonStateUpdate() {
+    updateDerivedState()
+    updateJsonState()
+}
 
 /**
  * Updates the jsonState attribute with current device state
