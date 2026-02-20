@@ -112,6 +112,9 @@
  *                     Tracks per-appliance last event times to identify which appliance stops
  *                     Watchdog now logs detailed stream health: KEEP-ALIVE vs real event gaps
  *                     Added showStreamHealth command for on-demand diagnostics
+ *  3.3.15 2026-02-20  Fix watchdog failing to detect dead stream when state.lastParseTime
+ *                     is null (Hubitat state loss). Falls back to lastRealEventTime or
+ *                     connectionStartTime so the timeout check always works.
  */
 
 import groovy.json.JsonSlurper
@@ -163,7 +166,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.2"
+@Field static final String DRIVER_VERSION = "3.3.15"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -400,8 +403,20 @@ def clearEventStats() {
  */
 def showStreamHealth() {
     def lastParse = state.lastParseTime ?: 0
-    def parseElapsed = lastParse > 0 ? (now() - lastParse) : -1
-    logStreamHealthDiagnostics(parseElapsed >= 0 ? parseElapsed : 0)
+    def parseElapsed
+    if (lastParse > 0) {
+        parseElapsed = now() - lastParse
+    } else {
+        // lastParseTime missing - use fallback timestamps for diagnostics
+        def fallback = state.lastRealEventTime ?: state.connectionStartTime ?: 0
+        if (fallback > 0) {
+            parseElapsed = now() - fallback
+            logWarn("showStreamHealth: lastParseTime is missing, using fallback timestamp")
+        } else {
+            parseElapsed = 0
+        }
+    }
+    logStreamHealthDiagnostics(parseElapsed)
 }
 
 /* ===========================================================================================================
@@ -530,9 +545,24 @@ def streamWatchdog() {
     }
 
     def lastParse = state.lastParseTime ?: 0
-    def elapsed = now() - lastParse
+    def elapsed
 
-    if (lastParse > 0 && elapsed > STREAM_TIMEOUT) {
+    if (lastParse > 0) {
+        elapsed = now() - lastParse
+    } else {
+        // lastParseTime is missing/null (possible Hubitat state loss) - use fallback timestamps
+        def fallback = state.lastRealEventTime ?: state.connectionStartTime ?: 0
+        if (fallback > 0) {
+            elapsed = now() - fallback
+            logWarn("Stream watchdog: lastParseTime is missing, using fallback timestamp (${(elapsed / 1000).toInteger()}s ago)")
+            state.lastParseTime = fallback
+        } else {
+            logWarn("Stream watchdog: all timestamps missing - forcing reconnect")
+            elapsed = STREAM_TIMEOUT + 1
+        }
+    }
+
+    if (elapsed > STREAM_TIMEOUT) {
         def elapsedSec = (elapsed / 1000).toInteger()
         logWarn("Stream watchdog: no data received for ${elapsedSec}s - stream appears dead, forcing reconnect")
         sendEvent(name: "connectionStatus", value: "disconnected - watchdog timeout")
