@@ -245,6 +245,13 @@ metadata {
         attribute "interiorLight", "enum", ["on", "off"]
 
         // =====================================================================
+        // ATTRIBUTES - Forecasts
+        // =====================================================================
+
+        attribute "waterForecast", "number"              // Estimated water usage (liters)
+        attribute "energyForecast", "number"             // Estimated energy usage (percent relative to rated)
+
+        // =====================================================================
         // ATTRIBUTES - Events & Alerts
         // =====================================================================
         
@@ -1141,6 +1148,17 @@ def parseEvent(Map evt) {
             sendEvent(name: "startInRelative", value: secondsToTime(sec))
             break
 
+        // ===== Forecasts =====
+        case "BSH.Common.Option.WaterForecast":
+            sendEvent(name: "waterForecast", value: safeToInteger(evt.value))
+            runIn(1, "deferredJsonStateUpdate")
+            break
+
+        case "BSH.Common.Option.EnergyForecast":
+            sendEvent(name: "energyForecast", value: safeToInteger(evt.value))
+            runIn(1, "deferredJsonStateUpdate")
+            break
+
         // ===== Programs =====
         case "BSH.Common.Root.ActiveProgram":
             sendEvent(name: "activeProgram", value: evt.displayvalue ?: extractEnum(evt.value))
@@ -1569,10 +1587,14 @@ private void updateJsonState() {
             elapsedProgramTimeFormatted: device.currentValue("elapsedProgramTimeFormatted"),
             estimatedEndTime: device.currentValue("estimatedEndTimeFormatted"),
             
+            // Forecasts
+            waterForecast: device.currentValue("waterForecast"),
+            energyForecast: device.currentValue("energyForecast"),
+
             // Control
             remoteControlStartAllowed: device.currentValue("remoteControlStartAllowed"),
             remoteControlActive: device.currentValue("remoteControlActive"),
-            
+
             // Alerts
             saltLow: device.currentValue("SaltNearlyEmpty") == "Present",
             rinseAidLow: device.currentValue("RinseAidNearlyEmpty") == "Present",
