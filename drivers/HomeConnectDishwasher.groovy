@@ -1349,7 +1349,7 @@ private void updateDerivedState() {
             Long estElapsedMs = (estTotalSec - remainingSec) * 1000L
             state.programStartTime = now() - estElapsedMs
             state.receivedElapsedTime = false
-            logInfo("Seeded programStartTime from derived state (progress=${progress}%, remaining=${remainingSec}s)")
+            logDebug("Seeded programStartTime from derived state (progress=${progress}%, remaining=${remainingSec}s)")
         }
 
         // Calculate estimated end time
