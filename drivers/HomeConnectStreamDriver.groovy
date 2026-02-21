@@ -817,7 +817,7 @@ private void updateEventStats(String eventType) {
     if (eventType != "KEEP-ALIVE") {
         state.lastRealEventTime = now()
         state.lastRealEventType = eventType
-        logInfo("Real event received: ${eventType} (total: ${state.eventStats[eventType]})")
+        logDebug("Real event received: ${eventType} (total: ${state.eventStats[eventType]})")
     }
 }
 
@@ -964,7 +964,7 @@ private void processEventPayload(String payload, String eventType = null) {
                     eventType: eventType
                 ]
 
-                logInfo("Received event: ${eventType} - ${item.key} = ${item.value} for ${haId}")
+                logDebug("Received event: ${eventType} - ${item.key} = ${item.value} for ${haId}")
                 updateEventStats(eventType ?: "STATUS")
                 trackApplianceEvent(haId, eventType ?: "STATUS", item.key)
                 parent?.handleApplianceEvent(evt)
