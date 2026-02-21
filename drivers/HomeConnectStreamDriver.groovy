@@ -230,6 +230,18 @@ def initialize() {
 }
 
 /**
+ * Detects driver code updates (e.g. via HPM) that don't trigger updated().
+ * Called from parse() so the first SSE event after an update triggers re-initialization.
+ */
+private void checkDriverVersion() {
+    if (device.currentValue("driverVersion") != DRIVER_VERSION) {
+        sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+        logInfo("Driver code updated to v${DRIVER_VERSION}, scheduling re-initialization")
+        runIn(2, "initialize")
+    }
+}
+
+/**
  * Refreshes the connection by disconnecting and reconnecting
  * Also updates the driver version attribute
  */
@@ -718,6 +730,9 @@ private void handleFollowUpRequestsError(String status) {
  * Data may arrive in fragments, so we buffer until we have complete messages
  */
 def parse(String text) {
+    // Detect driver code updates (e.g. HPM) that don't trigger updated()
+    checkDriverVersion()
+
     // Ignore data if rate limited (prevents processing error responses)
     if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
         return
