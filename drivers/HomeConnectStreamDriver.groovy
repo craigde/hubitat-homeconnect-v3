@@ -123,8 +123,10 @@
  *                     without "data:" prefix). Fallback parsing ensures events are not
  *                     silently dropped when the standard "data:" field is missing.
  *  3.3.17 2026-02-21  Add self-tracked API call counter (apiCallsToday attribute) with
- *                     rolling 24-hour window, per-method/category breakdown, and warnings
- *                     at 80%/90%/95% thresholds.  showApiUsage/resetApiCounter commands.
+ *                     per-method/category breakdown.  Counter resets are synced to Home
+ *                     Connect's own window via X-RateLimit-Remaining header (when it jumps
+ *                     up, their window reset, so we reset ours).  Warnings driven by the
+ *                     API-reported remaining count.  showApiUsage/resetApiCounter commands.
  *                     Auto-detect driver code updates (HPM) via checkDriverVersion() in
  *                     parse() — triggers re-initialize on first event after an update.
  */
@@ -1130,22 +1132,32 @@ def apiDelete(String path, Closure closure) {
 private void extractRateLimitHeaders(response) {
     try {
         def headers = response.getHeaders()
-        
+
         // Try different header name formats (Home Connect uses X-RateLimit-*)
         def remaining = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Remaining') }?.value
         def limit = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Limit') }?.value
-        
+
         if (remaining != null) {
             def remainingInt = remaining.toString().toInteger()
+            def previousRemaining = device.currentValue("rateLimitRemaining") as Integer
             sendEvent(name: "rateLimitRemaining", value: remainingInt)
             logDebug("Rate limit remaining: ${remainingInt}")
-            
+
+            // Detect Home Connect window reset: remaining jumped up means their window rolled over
+            if (previousRemaining != null && remainingInt > previousRemaining) {
+                logInfo("Home Connect rate limit window reset detected (${previousRemaining} -> ${remainingInt}), resetting local counter")
+                state.apiCallsTotal = 0
+                state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
+                state.apiCallsByCategory = [:]
+                sendEvent(name: "apiCallsToday", value: 0)
+            }
+
             // Warn if getting low
             if (remainingInt < 100) {
                 logWarn("Rate limit warning: only ${remainingInt} API calls remaining")
             }
         }
-        
+
         if (limit != null) {
             def limitInt = limit.toString().toInteger()
             sendEvent(name: "rateLimitLimit", value: limitInt)
@@ -1157,40 +1169,36 @@ private void extractRateLimitHeaders(response) {
 }
 
 /**
- * Tracks each outgoing API call in a self-managed 24-hour rolling counter.
- * Complements rateLimitRemaining (from API headers) with our own usage view.
+ * Tracks each outgoing API call. Counter resets are driven by the API's own
+ * X-RateLimit-Remaining header (detected in extractRateLimitHeaders) rather
+ * than a guessed 24-hour timer, so our window always matches Home Connect's.
  */
 private void trackApiCall(String method, String path) {
     try {
-        def now = now()
-
-        // Auto-reset when 24-hour window expires
-        if (state.apiCallsResetTime == null || now >= state.apiCallsResetTime) {
-            state.apiCallsResetTime = now + 86400000 // 24 hours from now
-            state.apiCallsTotal = 0
-            state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
-            state.apiCallsByCategory = [:]
-        }
-
-        state.apiCallsTotal = (state.apiCallsTotal ?: 0) + 1
+        // Initialise state on first call
+        if (state.apiCallsTotal == null) state.apiCallsTotal = 0
         if (state.apiCallsByMethod == null) state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
+        if (state.apiCallsByCategory == null) state.apiCallsByCategory = [:]
+
+        state.apiCallsTotal = state.apiCallsTotal + 1
         state.apiCallsByMethod[method] = (state.apiCallsByMethod[method] ?: 0) + 1
 
         // Categorise by endpoint path
         def category = categorizeApiCall(path)
-        if (state.apiCallsByCategory == null) state.apiCallsByCategory = [:]
         state.apiCallsByCategory[category] = (state.apiCallsByCategory[category] ?: 0) + 1
 
         sendEvent(name: "apiCallsToday", value: state.apiCallsTotal)
 
-        // Warn at thresholds
-        def total = state.apiCallsTotal
-        if (total == 800) {
-            logWarn("API usage warning: ${total} calls made in current 24-hour window (80% of 1000 limit)")
-        } else if (total == 900) {
-            logWarn("API usage critical: ${total} calls made in current 24-hour window (90% of 1000 limit)")
-        } else if (total >= 950 && total % 10 == 0) {
-            logError("API usage danger: ${total} calls — approaching 1000-call limit!")
+        // Warnings based on API-reported remaining (authoritative) if available,
+        // otherwise fall back to our own counter
+        def remaining = device.currentValue("rateLimitRemaining")
+        if (remaining != null) {
+            def remainingInt = remaining as Integer
+            if (remainingInt == 200 || remainingInt == 100 || remainingInt == 50) {
+                logWarn("Rate limit warning: ${remainingInt} API calls remaining (${state.apiCallsTotal} calls tracked this window)")
+            } else if (remainingInt <= 20 && remainingInt % 5 == 0) {
+                logError("Rate limit critical: only ${remainingInt} API calls remaining!")
+            }
         }
     } catch (Exception e) {
         logDebug("Error tracking API call: ${e.message}")
@@ -1220,19 +1228,21 @@ def showApiUsage() {
     def total = state.apiCallsTotal ?: 0
     def byMethod = state.apiCallsByMethod ?: [:]
     def byCategory = state.apiCallsByCategory ?: [:]
-    def resetTime = state.apiCallsResetTime ? formatDateTime(state.apiCallsResetTime) : "not set"
+    def remaining = device.currentValue("rateLimitRemaining")
+    def limit = device.currentValue("rateLimitLimit")
 
     log.info "==================== API USAGE ===================="
-    log.info "Total calls this window: ${total} / 1000"
-    log.info "Window resets at: ${resetTime}"
+    log.info "Calls tracked this window: ${total}"
+    if (remaining != null && limit != null) {
+        log.info "API-reported: ${remaining} / ${limit} remaining"
+    } else if (remaining != null) {
+        log.info "API-reported remaining: ${remaining}"
+    }
     log.info "By method:   GET=${byMethod.GET ?: 0}  PUT=${byMethod.PUT ?: 0}  DELETE=${byMethod.DELETE ?: 0}"
     byCategory.sort().each { cat, count ->
         log.info "  ${cat}: ${count}"
     }
-    def remaining = device.currentValue("rateLimitRemaining")
-    if (remaining != null) {
-        log.info "API-reported remaining: ${remaining}"
-    }
+    log.info "(Counter resets automatically when Home Connect's window resets)"
     log.info "==================================================="
 }
 
@@ -1243,9 +1253,8 @@ def resetApiCounter() {
     state.apiCallsTotal = 0
     state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
     state.apiCallsByCategory = [:]
-    state.apiCallsResetTime = now() + 86400000
     sendEvent(name: "apiCallsToday", value: 0)
-    logInfo("API call counter reset — next window resets at ${formatDateTime(state.apiCallsResetTime)}")
+    logInfo("API call counter reset")
 }
 
 /**
