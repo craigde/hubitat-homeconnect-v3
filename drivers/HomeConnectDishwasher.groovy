@@ -216,12 +216,13 @@ metadata {
         // ATTRIBUTES - Timing
         // =====================================================================
         
-        attribute "remainingProgramTime", "number"          // Seconds remaining
-        attribute "remainingProgramTimeFormatted", "string" // "01:23"
-        attribute "elapsedProgramTime", "number"            // Seconds elapsed
-        attribute "elapsedProgramTimeFormatted", "string"   // "00:45"
-        attribute "estimatedEndTimeFormatted", "string"     // "3:45 PM"
-        attribute "startInRelative", "string"               // Delayed start time
+        attribute "remainingProgramTime", "number"              // Seconds remaining
+        attribute "remainingProgramTimeFormatted", "string"     // "01:23" or "~01:23" if estimated
+        attribute "remainingProgramTimeIsEstimated", "string"   // "true"/"false" - appliance estimate vs known
+        attribute "elapsedProgramTime", "number"                // Seconds elapsed
+        attribute "elapsedProgramTimeFormatted", "string"       // "00:45"
+        attribute "estimatedEndTimeFormatted", "string"         // "3:45 PM"
+        attribute "startInRelative", "string"                   // Delayed start time
 
         // =====================================================================
         // ATTRIBUTES - Control State
@@ -243,6 +244,13 @@ metadata {
         attribute "ExtraDry", "string"
         attribute "HygienePlus", "string"
         attribute "interiorLight", "enum", ["on", "off"]
+
+        // =====================================================================
+        // ATTRIBUTES - Forecasts
+        // =====================================================================
+
+        attribute "waterForecast", "number"              // Estimated water usage (liters)
+        attribute "energyForecast", "number"             // Estimated energy usage (percent relative to rated)
 
         // =====================================================================
         // ATTRIBUTES - Events & Alerts
@@ -1099,8 +1107,8 @@ def parseEvent(Map evt) {
             logDebug("RemainingProgramTime received: ${sec}s (current attr: ${device.currentValue('remainingProgramTime')})")
             if (shouldUpdateTiming(sec)) {
                 sendEvent(name: "remainingProgramTime", value: sec, isStateChange: true)
-                sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(sec), isStateChange: true)
-                logDebug("RemainingProgramTime updated to ${sec}s (${secondsToTime(sec)})")
+                sendEvent(name: "remainingProgramTimeFormatted", value: formatRemainingTime(sec), isStateChange: true)
+                logDebug("RemainingProgramTime updated to ${sec}s (${formatRemainingTime(sec)})")
                 // Track API-reported remaining time for local countdown
                 state.lastApiRemainingTime = sec
                 state.lastApiRemainingTimeAt = now()
@@ -1139,6 +1147,28 @@ def parseEvent(Map evt) {
         case "BSH.Common.Option.StartInRelative":
             Integer sec = safeToInteger(evt.value)
             sendEvent(name: "startInRelative", value: secondsToTime(sec))
+            break
+
+        case "BSH.Common.Option.RemainingProgramTimeIsEstimated":
+            def isEstimated = evt.value?.toString()?.toLowerCase() == "true"
+            sendEvent(name: "remainingProgramTimeIsEstimated", value: isEstimated.toString())
+            // Re-format remaining time with/without "~" prefix
+            Integer currentRemaining = device.currentValue("remainingProgramTime") as Integer
+            if (currentRemaining != null && currentRemaining > 0) {
+                String formatted = secondsToTime(currentRemaining)
+                sendEvent(name: "remainingProgramTimeFormatted", value: isEstimated ? "~${formatted}" : formatted, isStateChange: true)
+            }
+            break
+
+        // ===== Forecasts =====
+        case "BSH.Common.Option.WaterForecast":
+            sendEvent(name: "waterForecast", value: safeToInteger(evt.value))
+            runIn(1, "deferredJsonStateUpdate")
+            break
+
+        case "BSH.Common.Option.EnergyForecast":
+            sendEvent(name: "energyForecast", value: safeToInteger(evt.value))
+            runIn(1, "deferredJsonStateUpdate")
             break
 
         // ===== Programs =====
@@ -1295,6 +1325,7 @@ private void finalizeProgramState() {
     // Set final values immediately (not deferred)
     sendEvent(name: "remainingProgramTime", value: 0)
     sendEvent(name: "remainingProgramTimeFormatted", value: "00:00")
+    sendEvent(name: "remainingProgramTimeIsEstimated", value: "false")
     sendEvent(name: "programProgress", value: 100)
     sendEvent(name: "progressBar", value: "100%")
     sendEvent(name: "estimatedEndTimeFormatted", value: "")
@@ -1322,6 +1353,7 @@ private void resetProgramState() {
     state.estimatedEndTimeMs = null
     sendEvent(name: "remainingProgramTime", value: 0)
     sendEvent(name: "remainingProgramTimeFormatted", value: "00:00")
+    sendEvent(name: "remainingProgramTimeIsEstimated", value: "false")
     sendEvent(name: "elapsedProgramTime", value: 0)
     sendEvent(name: "elapsedProgramTimeFormatted", value: "00:00")
     sendEvent(name: "programProgress", value: 0)
@@ -1371,7 +1403,7 @@ def tickProgramTimers() {
         Integer remaining = calculateRemainingTime()
         if (remaining != null) {
             sendEvent(name: "remainingProgramTime", value: remaining, isStateChange: true)
-            sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(remaining), isStateChange: true)
+            sendEvent(name: "remainingProgramTimeFormatted", value: formatRemainingTime(remaining), isStateChange: true)
         }
 
         // Re-derive estimated end time, cycle phase, friendly status
@@ -1427,7 +1459,7 @@ private void updateDerivedState() {
             if (estimated != null && estimated > 0) {
                 remainingSec = estimated
                 sendEvent(name: "remainingProgramTime", value: remainingSec, isStateChange: true)
-                sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(remainingSec), isStateChange: true)
+                sendEvent(name: "remainingProgramTimeFormatted", value: formatRemainingTime(remainingSec), isStateChange: true)
             }
         }
 
@@ -1569,10 +1601,14 @@ private void updateJsonState() {
             elapsedProgramTimeFormatted: device.currentValue("elapsedProgramTimeFormatted"),
             estimatedEndTime: device.currentValue("estimatedEndTimeFormatted"),
             
+            // Forecasts
+            waterForecast: device.currentValue("waterForecast"),
+            energyForecast: device.currentValue("energyForecast"),
+
             // Control
             remoteControlStartAllowed: device.currentValue("remoteControlStartAllowed"),
             remoteControlActive: device.currentValue("remoteControlActive"),
-            
+
             // Alerts
             saltLow: device.currentValue("SaltNearlyEmpty") == "Present",
             rinseAidLow: device.currentValue("RinseAidNearlyEmpty") == "Present",
@@ -1611,6 +1647,15 @@ private String secondsToTime(Integer sec) {
     long hours = sec / 3600
     long minutes = (sec % 3600) / 60
     return String.format("%02d:%02d", hours, minutes)
+}
+
+/**
+ * Formats remaining time with "~" prefix when the appliance reports it as estimated
+ */
+private String formatRemainingTime(Integer sec) {
+    String time = secondsToTime(sec)
+    boolean isEstimated = device.currentValue("remainingProgramTimeIsEstimated") == "true"
+    return (isEstimated && sec > 0) ? "~${time}" : time
 }
 
 /* ===========================================================================================================
