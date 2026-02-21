@@ -122,6 +122,11 @@
  *  3.3.16 2026-02-20  Handle bare JSON lines in SSE messages (Hubitat may deliver data
  *                     without "data:" prefix). Fallback parsing ensures events are not
  *                     silently dropped when the standard "data:" field is missing.
+ *  3.3.17 2026-02-21  Add self-tracked API call counter (apiCallsToday attribute) with
+ *                     rolling 24-hour window, per-method/category breakdown, and warnings
+ *                     at 80%/90%/95% thresholds.  showApiUsage/resetApiCounter commands.
+ *                     Auto-detect driver code updates (HPM) via checkDriverVersion() in
+ *                     parse() — triggers re-initialize on first event after an update.
  */
 
 import groovy.json.JsonSlurper
@@ -144,6 +149,8 @@ metadata {
         command "showEventStats", [[name: "Show Event Statistics", type: "STRING", description: "Display event statistics for diagnostics"]]
         command "clearEventStats", [[name: "Clear Event Statistics", type: "STRING", description: "Clear event statistics"]]
         command "showStreamHealth", [[name: "Show Stream Health", type: "STRING", description: "Show detailed stream health diagnostics"]]
+        command "showApiUsage", [[name: "Show API Usage", type: "STRING", description: "Show API call counts for the current 24-hour window"]]
+        command "resetApiCounter", [[name: "Reset API Counter", type: "STRING", description: "Reset the API call counter"]]
 
         // Internal command (z_ prefix convention)
         command "z_deviceLog", [[name: "level", type: "STRING"], [name: "msg", type: "STRING"]]
@@ -155,6 +162,7 @@ metadata {
         attribute "lastEventReceived", "string"  // ISO timestamp of last SSE event for health monitoring
         attribute "rateLimitRemaining", "number" // Remaining API calls (from response headers)
         attribute "rateLimitLimit", "number"     // Total API call limit (from response headers)
+        attribute "apiCallsToday", "number"     // Self-tracked API call count for current 24-hour window
         attribute "apiUrl", "string"             // Current API URL being used
         attribute "driverVersion", "string"
     }
@@ -173,7 +181,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.16"
+@Field static final String DRIVER_VERSION = "3.3.17"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -978,7 +986,8 @@ def apiGet(String path, Closure closure) {
     }
     
     logDebug("API GET: ${path}")
-    
+    trackApiCall("GET", path)
+
     try {
         httpGet(
             uri: getApiUrl() + path,
@@ -1030,7 +1039,8 @@ def apiPut(String path, Map data, Closure closure) {
     
     String body = new JsonOutput().toJson(data)
     logDebug("API PUT: ${path}")
-    
+    trackApiCall("PUT", path)
+
     try {
         httpPut(
             uri: getApiUrl() + path,
@@ -1081,7 +1091,8 @@ def apiDelete(String path, Closure closure) {
     }
     
     logDebug("API DELETE: ${path}")
-    
+    trackApiCall("DELETE", path)
+
     try {
         httpDelete(
             uri: getApiUrl() + path,
@@ -1143,6 +1154,98 @@ private void extractRateLimitHeaders(response) {
     } catch (Exception e) {
         logDebug("Could not extract rate limit headers: ${e.message}")
     }
+}
+
+/**
+ * Tracks each outgoing API call in a self-managed 24-hour rolling counter.
+ * Complements rateLimitRemaining (from API headers) with our own usage view.
+ */
+private void trackApiCall(String method, String path) {
+    try {
+        def now = now()
+
+        // Auto-reset when 24-hour window expires
+        if (state.apiCallsResetTime == null || now >= state.apiCallsResetTime) {
+            state.apiCallsResetTime = now + 86400000 // 24 hours from now
+            state.apiCallsTotal = 0
+            state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
+            state.apiCallsByCategory = [:]
+        }
+
+        state.apiCallsTotal = (state.apiCallsTotal ?: 0) + 1
+        if (state.apiCallsByMethod == null) state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
+        state.apiCallsByMethod[method] = (state.apiCallsByMethod[method] ?: 0) + 1
+
+        // Categorise by endpoint path
+        def category = categorizeApiCall(path)
+        if (state.apiCallsByCategory == null) state.apiCallsByCategory = [:]
+        state.apiCallsByCategory[category] = (state.apiCallsByCategory[category] ?: 0) + 1
+
+        sendEvent(name: "apiCallsToday", value: state.apiCallsTotal)
+
+        // Warn at thresholds
+        def total = state.apiCallsTotal
+        if (total == 800) {
+            logWarn("API usage warning: ${total} calls made in current 24-hour window (80% of 1000 limit)")
+        } else if (total == 900) {
+            logWarn("API usage critical: ${total} calls made in current 24-hour window (90% of 1000 limit)")
+        } else if (total >= 950 && total % 10 == 0) {
+            logError("API usage danger: ${total} calls — approaching 1000-call limit!")
+        }
+    } catch (Exception e) {
+        logDebug("Error tracking API call: ${e.message}")
+    }
+}
+
+/**
+ * Maps an API path to a human-readable category for usage reporting.
+ */
+private String categorizeApiCall(String path) {
+    if (path == null) return "unknown"
+    if (path.contains("/programs/available")) return "programs"
+    if (path.contains("/programs/active"))    return "programs"
+    if (path.contains("/programs/selected"))  return "programs"
+    if (path.contains("/status"))             return "status"
+    if (path.contains("/settings"))           return "settings"
+    if (path.contains("/commands"))           return "commands"
+    if (path.contains("/images"))             return "images"
+    if (path.endsWith("/homeappliances"))     return "discovery"
+    return "other"
+}
+
+/**
+ * Command: show API call usage for the current 24-hour window.
+ */
+def showApiUsage() {
+    def total = state.apiCallsTotal ?: 0
+    def byMethod = state.apiCallsByMethod ?: [:]
+    def byCategory = state.apiCallsByCategory ?: [:]
+    def resetTime = state.apiCallsResetTime ? formatDateTime(state.apiCallsResetTime) : "not set"
+
+    log.info "==================== API USAGE ===================="
+    log.info "Total calls this window: ${total} / 1000"
+    log.info "Window resets at: ${resetTime}"
+    log.info "By method:   GET=${byMethod.GET ?: 0}  PUT=${byMethod.PUT ?: 0}  DELETE=${byMethod.DELETE ?: 0}"
+    byCategory.sort().each { cat, count ->
+        log.info "  ${cat}: ${count}"
+    }
+    def remaining = device.currentValue("rateLimitRemaining")
+    if (remaining != null) {
+        log.info "API-reported remaining: ${remaining}"
+    }
+    log.info "==================================================="
+}
+
+/**
+ * Command: reset the API call counter (e.g. after manual verification).
+ */
+def resetApiCounter() {
+    state.apiCallsTotal = 0
+    state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
+    state.apiCallsByCategory = [:]
+    state.apiCallsResetTime = now() + 86400000
+    sendEvent(name: "apiCallsToday", value: 0)
+    logInfo("API call counter reset — next window resets at ${formatDateTime(state.apiCallsResetTime)}")
 }
 
 /**
@@ -1366,12 +1469,14 @@ private String extractHaIdFromPath(String path) {
 private void apiGetRetry(String path, Closure closure) {
     def token = parent?.getOAuthToken()
     def language = parent?.getLanguage() ?: "en-US"
-    
+
     if (!token) {
         logError("No OAuth token for API GET retry")
         return
     }
-    
+
+    trackApiCall("GET", path)
+
     try {
         httpGet(
             uri: getApiUrl() + path,
@@ -1399,12 +1504,14 @@ private void apiGetRetry(String path, Closure closure) {
 private void apiDeleteRetry(String path, Closure closure) {
     def token = parent?.getOAuthToken()
     def language = parent?.getLanguage() ?: "en-US"
-    
+
     if (!token) {
         logError("No OAuth token for API DELETE retry")
         return
     }
-    
+
+    trackApiCall("DELETE", path)
+
     try {
         httpDelete(
             uri: getApiUrl() + path,
