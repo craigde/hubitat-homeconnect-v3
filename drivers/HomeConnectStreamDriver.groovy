@@ -122,6 +122,17 @@
  *  3.3.16 2026-02-20  Handle bare JSON lines in SSE messages (Hubitat may deliver data
  *                     without "data:" prefix). Fallback parsing ensures events are not
  *                     silently dropped when the standard "data:" field is missing.
+ *  3.3.18 2026-02-21  Fix keep-alive detection: Home Connect sends keep-alives as bare
+ *                     "data:" (no event: field, no JSON payload). Previous code required
+ *                     line.length() > 5 which silently dropped them. Now detected via
+ *                     hasDataField with no payload. KEEP-ALIVE counter works correctly.
+ *  3.3.17 2026-02-21  Add self-tracked API call counter (apiCallsToday attribute) with
+ *                     per-method/category breakdown.  Counter resets are synced to Home
+ *                     Connect's own window via X-RateLimit-Remaining header (when it jumps
+ *                     up, their window reset, so we reset ours).  Warnings driven by the
+ *                     API-reported remaining count.  showApiUsage/resetApiCounter commands.
+ *                     Auto-detect driver code updates (HPM) via checkDriverVersion() in
+ *                     parse() — triggers re-initialize on first event after an update.
  */
 
 import groovy.json.JsonSlurper
@@ -144,6 +155,8 @@ metadata {
         command "showEventStats", [[name: "Show Event Statistics", type: "STRING", description: "Display event statistics for diagnostics"]]
         command "clearEventStats", [[name: "Clear Event Statistics", type: "STRING", description: "Clear event statistics"]]
         command "showStreamHealth", [[name: "Show Stream Health", type: "STRING", description: "Show detailed stream health diagnostics"]]
+        command "showApiUsage", [[name: "Show API Usage", type: "STRING", description: "Show API call counts for the current 24-hour window"]]
+        command "resetApiCounter", [[name: "Reset API Counter", type: "STRING", description: "Reset the API call counter"]]
 
         // Internal command (z_ prefix convention)
         command "z_deviceLog", [[name: "level", type: "STRING"], [name: "msg", type: "STRING"]]
@@ -155,6 +168,7 @@ metadata {
         attribute "lastEventReceived", "string"  // ISO timestamp of last SSE event for health monitoring
         attribute "rateLimitRemaining", "number" // Remaining API calls (from response headers)
         attribute "rateLimitLimit", "number"     // Total API call limit (from response headers)
+        attribute "apiCallsToday", "number"     // Self-tracked API call count for current 24-hour window
         attribute "apiUrl", "string"             // Current API URL being used
         attribute "driverVersion", "string"
     }
@@ -173,7 +187,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.16"
+@Field static final String DRIVER_VERSION = "3.3.18"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -227,6 +241,18 @@ def initialize() {
     runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
 
     connect()
+}
+
+/**
+ * Detects driver code updates (e.g. via HPM) that don't trigger updated().
+ * Called from parse() so the first SSE event after an update triggers re-initialization.
+ */
+private void checkDriverVersion() {
+    if (device.currentValue("driverVersion") != DRIVER_VERSION) {
+        sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+        logInfo("Driver code updated to v${DRIVER_VERSION}, scheduling re-initialization")
+        runIn(2, "initialize")
+    }
 }
 
 /**
@@ -718,6 +744,9 @@ private void handleFollowUpRequestsError(String status) {
  * Data may arrive in fragments, so we buffer until we have complete messages
  */
 def parse(String text) {
+    // Detect driver code updates (e.g. HPM) that don't trigger updated()
+    checkDriverVersion()
+
     // Ignore data if rate limited (prevents processing error responses)
     if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
         return
@@ -843,15 +872,18 @@ private void handleRateLimitError(String text) {
  */
 private void processSSEMessage(String message) {
     logDebug("Processing SSE message: ${message?.take(100)}${message?.length() > 100 ? '...' : ''}")
-    
+
     String eventType = null
     String dataPayload = null
-    
+    boolean hasDataField = false
+
     message.split("\n").each { line ->
         if (line.startsWith("event:") && line.length() > 6) {
             eventType = line.substring(6).trim()
-        } else if (line.startsWith("data:") && line.length() > 5) {
-            dataPayload = line.substring(5).trim()
+        } else if (line.startsWith("data:")) {
+            hasDataField = true
+            def value = line.length() > 5 ? line.substring(5).trim() : ""
+            if (value) dataPayload = value
         }
     }
 
@@ -869,6 +901,11 @@ private void processSSEMessage(String message) {
         processEventPayload(dataPayload, eventType)
     } else if (dataPayload) {
         processEventPayload(dataPayload)
+    } else if (hasDataField && !dataPayload) {
+        // Keep-alive: SSE message with data: field but no payload
+        // Home Connect sends these every ~55s without an event: KEEP-ALIVE field
+        logDebug("Keep-alive received (empty data field)")
+        updateEventStats("KEEP-ALIVE")
     }
 }
 
@@ -963,7 +1000,8 @@ def apiGet(String path, Closure closure) {
     }
     
     logDebug("API GET: ${path}")
-    
+    trackApiCall("GET", path)
+
     try {
         httpGet(
             uri: getApiUrl() + path,
@@ -1015,7 +1053,8 @@ def apiPut(String path, Map data, Closure closure) {
     
     String body = new JsonOutput().toJson(data)
     logDebug("API PUT: ${path}")
-    
+    trackApiCall("PUT", path)
+
     try {
         httpPut(
             uri: getApiUrl() + path,
@@ -1066,7 +1105,8 @@ def apiDelete(String path, Closure closure) {
     }
     
     logDebug("API DELETE: ${path}")
-    
+    trackApiCall("DELETE", path)
+
     try {
         httpDelete(
             uri: getApiUrl() + path,
@@ -1104,22 +1144,32 @@ def apiDelete(String path, Closure closure) {
 private void extractRateLimitHeaders(response) {
     try {
         def headers = response.getHeaders()
-        
+
         // Try different header name formats (Home Connect uses X-RateLimit-*)
         def remaining = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Remaining') }?.value
         def limit = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Limit') }?.value
-        
+
         if (remaining != null) {
             def remainingInt = remaining.toString().toInteger()
+            def previousRemaining = device.currentValue("rateLimitRemaining") as Integer
             sendEvent(name: "rateLimitRemaining", value: remainingInt)
             logDebug("Rate limit remaining: ${remainingInt}")
-            
+
+            // Detect Home Connect window reset: remaining jumped up means their window rolled over
+            if (previousRemaining != null && remainingInt > previousRemaining) {
+                logInfo("Home Connect rate limit window reset detected (${previousRemaining} -> ${remainingInt}), resetting local counter")
+                state.apiCallsTotal = 0
+                state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
+                state.apiCallsByCategory = [:]
+                sendEvent(name: "apiCallsToday", value: 0)
+            }
+
             // Warn if getting low
             if (remainingInt < 100) {
                 logWarn("Rate limit warning: only ${remainingInt} API calls remaining")
             }
         }
-        
+
         if (limit != null) {
             def limitInt = limit.toString().toInteger()
             sendEvent(name: "rateLimitLimit", value: limitInt)
@@ -1128,6 +1178,95 @@ private void extractRateLimitHeaders(response) {
     } catch (Exception e) {
         logDebug("Could not extract rate limit headers: ${e.message}")
     }
+}
+
+/**
+ * Tracks each outgoing API call. Counter resets are driven by the API's own
+ * X-RateLimit-Remaining header (detected in extractRateLimitHeaders) rather
+ * than a guessed 24-hour timer, so our window always matches Home Connect's.
+ */
+private void trackApiCall(String method, String path) {
+    try {
+        // Initialise state on first call
+        if (state.apiCallsTotal == null) state.apiCallsTotal = 0
+        if (state.apiCallsByMethod == null) state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
+        if (state.apiCallsByCategory == null) state.apiCallsByCategory = [:]
+
+        state.apiCallsTotal = state.apiCallsTotal + 1
+        state.apiCallsByMethod[method] = (state.apiCallsByMethod[method] ?: 0) + 1
+
+        // Categorise by endpoint path
+        def category = categorizeApiCall(path)
+        state.apiCallsByCategory[category] = (state.apiCallsByCategory[category] ?: 0) + 1
+
+        sendEvent(name: "apiCallsToday", value: state.apiCallsTotal)
+
+        // Warnings based on API-reported remaining (authoritative) if available,
+        // otherwise fall back to our own counter
+        def remaining = device.currentValue("rateLimitRemaining")
+        if (remaining != null) {
+            def remainingInt = remaining as Integer
+            if (remainingInt == 200 || remainingInt == 100 || remainingInt == 50) {
+                logWarn("Rate limit warning: ${remainingInt} API calls remaining (${state.apiCallsTotal} calls tracked this window)")
+            } else if (remainingInt <= 20 && remainingInt % 5 == 0) {
+                logError("Rate limit critical: only ${remainingInt} API calls remaining!")
+            }
+        }
+    } catch (Exception e) {
+        logDebug("Error tracking API call: ${e.message}")
+    }
+}
+
+/**
+ * Maps an API path to a human-readable category for usage reporting.
+ */
+private String categorizeApiCall(String path) {
+    if (path == null) return "unknown"
+    if (path.contains("/programs/available")) return "programs"
+    if (path.contains("/programs/active"))    return "programs"
+    if (path.contains("/programs/selected"))  return "programs"
+    if (path.contains("/status"))             return "status"
+    if (path.contains("/settings"))           return "settings"
+    if (path.contains("/commands"))           return "commands"
+    if (path.contains("/images"))             return "images"
+    if (path.endsWith("/homeappliances"))     return "discovery"
+    return "other"
+}
+
+/**
+ * Command: show API call usage for the current 24-hour window.
+ */
+def showApiUsage() {
+    def total = state.apiCallsTotal ?: 0
+    def byMethod = state.apiCallsByMethod ?: [:]
+    def byCategory = state.apiCallsByCategory ?: [:]
+    def remaining = device.currentValue("rateLimitRemaining")
+    def limit = device.currentValue("rateLimitLimit")
+
+    log.info "==================== API USAGE ===================="
+    log.info "Calls tracked this window: ${total}"
+    if (remaining != null && limit != null) {
+        log.info "API-reported: ${remaining} / ${limit} remaining"
+    } else if (remaining != null) {
+        log.info "API-reported remaining: ${remaining}"
+    }
+    log.info "By method:   GET=${byMethod.GET ?: 0}  PUT=${byMethod.PUT ?: 0}  DELETE=${byMethod.DELETE ?: 0}"
+    byCategory.sort().each { cat, count ->
+        log.info "  ${cat}: ${count}"
+    }
+    log.info "(Counter resets automatically when Home Connect's window resets)"
+    log.info "==================================================="
+}
+
+/**
+ * Command: reset the API call counter (e.g. after manual verification).
+ */
+def resetApiCounter() {
+    state.apiCallsTotal = 0
+    state.apiCallsByMethod = [GET: 0, PUT: 0, DELETE: 0]
+    state.apiCallsByCategory = [:]
+    sendEvent(name: "apiCallsToday", value: 0)
+    logInfo("API call counter reset")
 }
 
 /**
@@ -1351,12 +1490,14 @@ private String extractHaIdFromPath(String path) {
 private void apiGetRetry(String path, Closure closure) {
     def token = parent?.getOAuthToken()
     def language = parent?.getLanguage() ?: "en-US"
-    
+
     if (!token) {
         logError("No OAuth token for API GET retry")
         return
     }
-    
+
+    trackApiCall("GET", path)
+
     try {
         httpGet(
             uri: getApiUrl() + path,
@@ -1384,12 +1525,14 @@ private void apiGetRetry(String path, Closure closure) {
 private void apiDeleteRetry(String path, Closure closure) {
     def token = parent?.getOAuthToken()
     def language = parent?.getLanguage() ?: "en-US"
-    
+
     if (!token) {
         logError("No OAuth token for API DELETE retry")
         return
     }
-    
+
+    trackApiCall("DELETE", path)
+
     try {
         httpDelete(
             uri: getApiUrl() + path,

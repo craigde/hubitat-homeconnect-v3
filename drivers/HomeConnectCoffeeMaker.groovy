@@ -338,6 +338,18 @@ def initialize() {
     runIn(5, "getAvailablePrograms")
 }
 
+/**
+ * Detects driver code updates (e.g. via HPM) that don't trigger updated().
+ * Called from parseEvent() so the first event after an update triggers re-initialization.
+ */
+private void checkDriverVersion() {
+    if (device.currentValue("driverVersion") != DRIVER_VERSION) {
+        sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+        logInfo("Driver code updated to v${DRIVER_VERSION}, scheduling re-initialization")
+        runIn(2, "initialize")
+    }
+}
+
 def refresh() {
     logInfo("Refreshing")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
@@ -803,8 +815,9 @@ private void parseItemList(List items) {
 }
 
 def parseEvent(Map evt) {
+    checkDriverVersion()
     if (!evt?.key) return
-    
+
     // Log raw event if enabled
     if (settings?.logRawEvents) {
         log.debug "${device.displayName}: RAW EVENT: ${evt}"
