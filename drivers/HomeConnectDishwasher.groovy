@@ -95,9 +95,13 @@
  *  3.1.8  2026-02-20  Fixed elapsed time not populating when driver updated mid-cycle
  *                     Back-calculates programStartTime from progress% and remaining time
  *                     Handles edge case where OperationState is already "Run" at init
- *  3.1.10 2026-02-21  Local timer ticker: updates elapsed/remaining time every 60s while
- *                     running, so the device page stays current even when Home Connect
- *                     stops sending status events mid-cycle.
+ *  3.1.10 2026-02-21  Local timer ticker: updates elapsed/remaining time (and formatted
+ *                     versions) every 60s while running, so dashboards stay current even
+ *                     when Home Connect stops sending status events mid-cycle.
+ *                     Split Finished vs Ready/Inactive handling: finalizeProgramState()
+ *                     preserves final elapsed time, sets progress=100%, and immediately
+ *                     updates cyclePhase/friendlyStatus (no deferred-only update).
+ *                     resetProgramState() now also sets cyclePhase=Idle, friendlyStatus=Ready.
  *  3.1.9  2026-02-20  Fixed derived states not updating when operationState is null
  *                     Infers Run state from active timing values (progress > 0, remaining > 0)
  *                     Seeds programStartTime from derived state when missing
@@ -1012,8 +1016,11 @@ def parseEvent(Map evt) {
                 startTimerTicker()
             }
 
-            // Reset timers when program ends
-            if (opState in ["Ready", "Inactive", "Finished"]) {
+            // Handle program end states
+            if (opState == "Finished") {
+                stopTimerTicker()
+                finalizeProgramState()
+            } else if (opState in ["Ready", "Inactive"]) {
                 stopTimerTicker()
                 resetProgramState()
             }
@@ -1192,6 +1199,42 @@ private boolean shouldUpdateTiming(Integer newValue) {
 /**
  * Resets all program-related state when a cycle ends
  */
+/**
+ * Finalizes program state when cycle completes (OperationState = Finished).
+ * Preserves final elapsed time and sets progress to 100%, so dashboards
+ * show the completed state rather than zeroing everything out.
+ */
+private void finalizeProgramState() {
+    logDebug("Finalizing program state (cycle complete)")
+
+    // Calculate and preserve final elapsed time
+    if (state.programStartTime) {
+        Integer elapsedSec = ((now() - state.programStartTime) / 1000).toInteger()
+        sendEvent(name: "elapsedProgramTime", value: elapsedSec)
+        sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(elapsedSec))
+        logInfo("Cycle completed in ${secondsToTime(elapsedSec)}")
+    }
+
+    // Set final values immediately (not deferred)
+    sendEvent(name: "remainingProgramTime", value: 0)
+    sendEvent(name: "remainingProgramTimeFormatted", value: "00:00")
+    sendEvent(name: "programProgress", value: 100)
+    sendEvent(name: "progressBar", value: "100%")
+    sendEvent(name: "estimatedEndTimeFormatted", value: "")
+    sendEvent(name: "cyclePhase", value: "Complete")
+    sendEvent(name: "friendlyStatus", value: "Complete")
+
+    // Clear internal tracking state
+    state.programStartTime = null
+    state.receivedElapsedTime = false
+    state.lastApiRemainingTime = null
+    state.lastApiRemainingTimeAt = null
+}
+
+/**
+ * Resets all program-related state when appliance returns to Ready/Inactive.
+ * Zeros everything to prepare for the next cycle.
+ */
 private void resetProgramState() {
     logDebug("Resetting program state")
     state.programStartTime = null
@@ -1205,6 +1248,8 @@ private void resetProgramState() {
     sendEvent(name: "programProgress", value: 0)
     sendEvent(name: "progressBar", value: "0%")
     sendEvent(name: "estimatedEndTimeFormatted", value: "")
+    sendEvent(name: "cyclePhase", value: "Idle")
+    sendEvent(name: "friendlyStatus", value: "Ready")
     sendEvent(name: "startInRelative", value: "")
     sendEvent(name: "activeProgram", value: "None")
 }
