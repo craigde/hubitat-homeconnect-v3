@@ -102,6 +102,12 @@
  *                     preserves final elapsed time, sets progress=100%, and immediately
  *                     updates cyclePhase/friendlyStatus (no deferred-only update).
  *                     resetProgramState() now also sets cyclePhase=Idle, friendlyStatus=Ready.
+ *  3.1.11 2026-02-21  Fixed remainingProgramTime not updating during cycle
+ *                     API doesn't send RemainingProgramTime SSE events until final minutes
+ *                     Now fetches active program via REST when cycle starts (Run transition)
+ *                     Added estimation from elapsed time + progress% as fallback
+ *                     Added isStateChange:true to remaining time sendEvent calls
+ *                     Added debug logging around remaining time updates for diagnostics
  *  3.1.9  2026-02-20  Fixed derived states not updating when operationState is null
  *                     Infers Run state from active timing values (progress > 0, remaining > 0)
  *                     Seeds programStartTime from derived state when missing
@@ -306,7 +312,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.10"
+@Field static final String DRIVER_VERSION = "3.1.11"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -569,6 +575,22 @@ def on() {
  */
 def off() { 
     setPower("off") 
+}
+
+/**
+ * Fetches the active program via REST API to get initial timing data
+ * Called with delay when OperationState transitions to Run, since the
+ * Home Connect API often doesn't send RemainingProgramTime SSE events
+ * until the final minutes of a cycle.
+ */
+def fetchActiveProgramFromApi() {
+    // Only fetch if we haven't received remaining time from SSE yet
+    if (state.lastApiRemainingTime != null && (state.lastApiRemainingTime as Integer) > 0) {
+        logDebug("Skipping active program fetch - already have remaining time: ${state.lastApiRemainingTime}s")
+        return
+    }
+    logInfo("Fetching active program to get initial remaining time")
+    parent?.fetchActiveProgram(device)
 }
 
 /**
@@ -992,9 +1014,15 @@ def parseEvent(Map evt) {
             if (opState == "Run" && previousState != "Run") {
                 state.programStartTime = now()
                 state.receivedElapsedTime = false
+                state.lastApiRemainingTime = null
+                state.lastApiRemainingTimeAt = null
+                state.estimatedEndTimeMs = null
                 logDebug("Program started - tracking start time for elapsed calculation")
                 // Start local timer ticker to keep display current between API events
                 startTimerTicker()
+                // Fetch active program to get initial remaining time
+                // (API often doesn't send RemainingProgramTime SSE events until final minutes)
+                runIn(5, "fetchActiveProgramFromApi")
             }
 
             // Seed programStartTime for already-running cycles (e.g. after driver update/initialize)
@@ -1068,12 +1096,18 @@ def parseEvent(Map evt) {
         // ===== Timing =====
         case "BSH.Common.Option.RemainingProgramTime":
             Integer sec = safeToInteger(evt.value)
+            logDebug("RemainingProgramTime received: ${sec}s (current attr: ${device.currentValue('remainingProgramTime')})")
             if (shouldUpdateTiming(sec)) {
-                sendEvent(name: "remainingProgramTime", value: sec)
-                sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(sec))
+                sendEvent(name: "remainingProgramTime", value: sec, isStateChange: true)
+                sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(sec), isStateChange: true)
+                logDebug("RemainingProgramTime updated to ${sec}s (${secondsToTime(sec)})")
                 // Track API-reported remaining time for local countdown
                 state.lastApiRemainingTime = sec
                 state.lastApiRemainingTimeAt = now()
+                // Store estimated end time in millis for deriving remaining time
+                if (sec > 0) {
+                    state.estimatedEndTimeMs = now() + (sec * 1000L)
+                }
                 // Reset ticker phase so next tick is a full 60s from this fresh data
                 if (device.currentValue("operationState") == "Run") {
                     startTimerTicker()
@@ -1188,6 +1222,40 @@ def parseEvent(Map evt) {
    =========================================================================================================== */
 
 /**
+ * Calculates remaining time using the best available data source:
+ * 1. Estimated end time (most accurate when set from API data)
+ * 2. Last API-reported remaining time with elapsed countdown
+ * 3. Estimation from elapsed time and progress percentage
+ * Returns null if no calculation is possible.
+ */
+private Integer calculateRemainingTime() {
+    // Method 1: Derive from stored estimated end time (set when API reports remaining time)
+    if (state.estimatedEndTimeMs != null) {
+        Integer remaining = Math.max(0, ((state.estimatedEndTimeMs as Long) - now()) / 1000 as Integer)
+        return remaining
+    }
+
+    // Method 2: Count down from last API-reported value
+    if (state.lastApiRemainingTime != null && state.lastApiRemainingTimeAt != null) {
+        Integer secSinceUpdate = ((now() - state.lastApiRemainingTimeAt) / 1000).toInteger()
+        return Math.max(0, (state.lastApiRemainingTime as Integer) - secSinceUpdate)
+    }
+
+    // Method 3: Estimate from elapsed time and progress percentage
+    if (state.programStartTime) {
+        Integer progress = device.currentValue("programProgress") as Integer
+        if (progress != null && progress > 5) {  // Need at least 5% for reasonable estimate
+            Integer elapsedSec = ((now() - state.programStartTime) / 1000).toInteger()
+            Integer estimatedRemaining = (elapsedSec * ((100 - progress) / (double) progress)).toInteger()
+            logDebug("Estimated remaining time from progress: ${estimatedRemaining}s (${progress}% done, ${elapsedSec}s elapsed)")
+            return Math.max(0, estimatedRemaining)
+        }
+    }
+
+    return null
+}
+
+/**
  * Determines if a timing update should be applied
  * Filters spurious zero values that sometimes occur during active runs
  */
@@ -1238,6 +1306,7 @@ private void finalizeProgramState() {
     state.receivedElapsedTime = false
     state.lastApiRemainingTime = null
     state.lastApiRemainingTimeAt = null
+    state.estimatedEndTimeMs = null
 }
 
 /**
@@ -1250,6 +1319,7 @@ private void resetProgramState() {
     state.receivedElapsedTime = false
     state.lastApiRemainingTime = null
     state.lastApiRemainingTimeAt = null
+    state.estimatedEndTimeMs = null
     sendEvent(name: "remainingProgramTime", value: 0)
     sendEvent(name: "remainingProgramTimeFormatted", value: "00:00")
     sendEvent(name: "elapsedProgramTime", value: 0)
@@ -1297,12 +1367,11 @@ def tickProgramTimers() {
             sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(elapsedSec))
         }
 
-        // Count down remaining time from last API-reported value
-        if (state.lastApiRemainingTime != null && state.lastApiRemainingTimeAt != null) {
-            Integer secSinceUpdate = ((now() - state.lastApiRemainingTimeAt) / 1000).toInteger()
-            Integer remaining = Math.max(0, (state.lastApiRemainingTime as Integer) - secSinceUpdate)
-            sendEvent(name: "remainingProgramTime", value: remaining)
-            sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(remaining))
+        // Count down remaining time
+        Integer remaining = calculateRemainingTime()
+        if (remaining != null) {
+            sendEvent(name: "remainingProgramTime", value: remaining, isStateChange: true)
+            sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(remaining), isStateChange: true)
         }
 
         // Re-derive estimated end time, cycle phase, friendly status
@@ -1352,9 +1421,23 @@ private void updateDerivedState() {
             logDebug("Seeded programStartTime from derived state (progress=${progress}%, remaining=${remainingSec}s)")
         }
 
+        // Estimate remaining time if API hasn't provided it yet
+        if (opState == "Run" && (remainingSec == null || remainingSec == 0)) {
+            Integer estimated = calculateRemainingTime()
+            if (estimated != null && estimated > 0) {
+                remainingSec = estimated
+                sendEvent(name: "remainingProgramTime", value: remainingSec, isStateChange: true)
+                sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(remainingSec), isStateChange: true)
+            }
+        }
+
         // Calculate estimated end time
         if (remainingSec != null && remainingSec > 0 && opState == "Run") {
             Long endMillis = now() + (remainingSec * 1000L)
+            // Store for future remaining time derivation
+            if (state.estimatedEndTimeMs == null) {
+                state.estimatedEndTimeMs = endMillis
+            }
             TimeZone tz = location?.timeZone ?: TimeZone.getDefault()
             String endFormatted = new Date(endMillis).format("h:mm a", tz)
             sendEvent(name: "estimatedEndTimeFormatted", value: endFormatted)
