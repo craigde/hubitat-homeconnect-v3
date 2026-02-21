@@ -1074,6 +1074,10 @@ def parseEvent(Map evt) {
                 // Track API-reported remaining time for local countdown
                 state.lastApiRemainingTime = sec
                 state.lastApiRemainingTimeAt = now()
+                // Reset ticker phase so next tick is a full 60s from this fresh data
+                if (device.currentValue("operationState") == "Run") {
+                    startTimerTicker()
+                }
                 runIn(1, "deferredJsonStateUpdate")
             }
             break
@@ -1083,6 +1087,11 @@ def parseEvent(Map evt) {
             state.receivedElapsedTime = true
             sendEvent(name: "elapsedProgramTime", value: sec)
             sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(sec))
+            // Reset ticker phase — API is providing elapsed, so next tick
+            // only needs to countdown remaining from its last anchor
+            if (device.currentValue("operationState") == "Run") {
+                startTimerTicker()
+            }
             runIn(1, "deferredJsonStateUpdate")
             break
 
