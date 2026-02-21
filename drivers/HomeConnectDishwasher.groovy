@@ -95,6 +95,9 @@
  *  3.1.8  2026-02-20  Fixed elapsed time not populating when driver updated mid-cycle
  *                     Back-calculates programStartTime from progress% and remaining time
  *                     Handles edge case where OperationState is already "Run" at init
+ *  3.1.10 2026-02-21  Local timer ticker: updates elapsed/remaining time every 60s while
+ *                     running, so the device page stays current even when Home Connect
+ *                     stops sending status events mid-cycle.
  *  3.1.9  2026-02-20  Fixed derived states not updating when operationState is null
  *                     Infers Run state from active timing values (progress > 0, remaining > 0)
  *                     Seeds programStartTime from derived state when missing
@@ -299,7 +302,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.9"
+@Field static final String DRIVER_VERSION = "3.1.10"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -986,6 +989,8 @@ def parseEvent(Map evt) {
                 state.programStartTime = now()
                 state.receivedElapsedTime = false
                 logDebug("Program started - tracking start time for elapsed calculation")
+                // Start local timer ticker to keep display current between API events
+                startTimerTicker()
             }
 
             // Seed programStartTime for already-running cycles (e.g. after driver update/initialize)
@@ -1004,10 +1009,12 @@ def parseEvent(Map evt) {
                     logInfo("Seeded programStartTime to now() (no progress data available)")
                 }
                 state.receivedElapsedTime = false
+                startTimerTicker()
             }
 
             // Reset timers when program ends
             if (opState in ["Ready", "Inactive", "Finished"]) {
+                stopTimerTicker()
                 resetProgramState()
             }
             runIn(1, "deferredJsonStateUpdate")
@@ -1057,6 +1064,9 @@ def parseEvent(Map evt) {
             if (shouldUpdateTiming(sec)) {
                 sendEvent(name: "remainingProgramTime", value: sec)
                 sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(sec))
+                // Track API-reported remaining time for local countdown
+                state.lastApiRemainingTime = sec
+                state.lastApiRemainingTimeAt = now()
                 runIn(1, "deferredJsonStateUpdate")
             }
             break
@@ -1186,6 +1196,8 @@ private void resetProgramState() {
     logDebug("Resetting program state")
     state.programStartTime = null
     state.receivedElapsedTime = false
+    state.lastApiRemainingTime = null
+    state.lastApiRemainingTimeAt = null
     sendEvent(name: "remainingProgramTime", value: 0)
     sendEvent(name: "remainingProgramTimeFormatted", value: "00:00")
     sendEvent(name: "elapsedProgramTime", value: 0)
@@ -1195,6 +1207,61 @@ private void resetProgramState() {
     sendEvent(name: "estimatedEndTimeFormatted", value: "")
     sendEvent(name: "startInRelative", value: "")
     sendEvent(name: "activeProgram", value: "None")
+}
+
+/**
+ * Starts the local timer ticker to update elapsed/remaining time every 60 seconds.
+ * Keeps the device page current even when Home Connect stops sending events mid-cycle.
+ */
+private void startTimerTicker() {
+    unschedule("tickProgramTimers")
+    runIn(60, "tickProgramTimers")
+    logDebug("Timer ticker started")
+}
+
+private void stopTimerTicker() {
+    unschedule("tickProgramTimers")
+    logDebug("Timer ticker stopped")
+}
+
+/**
+ * Periodic tick (every 60s) that updates elapsed and remaining time locally.
+ * Only active while operationState == Run. Real API events override these estimates.
+ */
+def tickProgramTimers() {
+    try {
+        def opState = device.currentValue("operationState") as String
+        if (opState != "Run") {
+            logDebug("Timer tick: not in Run state (${opState}), stopping ticker")
+            return
+        }
+
+        // Update elapsed time from programStartTime
+        if (state.programStartTime && !state.receivedElapsedTime) {
+            Integer elapsedSec = ((now() - state.programStartTime) / 1000).toInteger()
+            sendEvent(name: "elapsedProgramTime", value: elapsedSec)
+            sendEvent(name: "elapsedProgramTimeFormatted", value: secondsToTime(elapsedSec))
+        }
+
+        // Count down remaining time from last API-reported value
+        if (state.lastApiRemainingTime != null && state.lastApiRemainingTimeAt != null) {
+            Integer secSinceUpdate = ((now() - state.lastApiRemainingTimeAt) / 1000).toInteger()
+            Integer remaining = Math.max(0, (state.lastApiRemainingTime as Integer) - secSinceUpdate)
+            sendEvent(name: "remainingProgramTime", value: remaining)
+            sendEvent(name: "remainingProgramTimeFormatted", value: secondsToTime(remaining))
+        }
+
+        // Re-derive estimated end time, cycle phase, friendly status
+        updateDerivedState()
+        updateJsonState()
+
+        // Schedule next tick
+        runIn(60, "tickProgramTimers")
+    } catch (Exception e) {
+        logWarn("Timer tick error: ${e.message}")
+        // Reschedule even on error
+        runIn(60, "tickProgramTimers")
+    }
 }
 
 /* ===========================================================================================================

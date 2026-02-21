@@ -122,6 +122,10 @@
  *  3.3.16 2026-02-20  Handle bare JSON lines in SSE messages (Hubitat may deliver data
  *                     without "data:" prefix). Fallback parsing ensures events are not
  *                     silently dropped when the standard "data:" field is missing.
+ *  3.3.18 2026-02-21  Fix keep-alive detection: Home Connect sends keep-alives as bare
+ *                     "data:" (no event: field, no JSON payload). Previous code required
+ *                     line.length() > 5 which silently dropped them. Now detected via
+ *                     hasDataField with no payload. KEEP-ALIVE counter works correctly.
  *  3.3.17 2026-02-21  Add self-tracked API call counter (apiCallsToday attribute) with
  *                     per-method/category breakdown.  Counter resets are synced to Home
  *                     Connect's own window via X-RateLimit-Remaining header (when it jumps
@@ -183,7 +187,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.17"
+@Field static final String DRIVER_VERSION = "3.3.18"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -868,15 +872,18 @@ private void handleRateLimitError(String text) {
  */
 private void processSSEMessage(String message) {
     logDebug("Processing SSE message: ${message?.take(100)}${message?.length() > 100 ? '...' : ''}")
-    
+
     String eventType = null
     String dataPayload = null
-    
+    boolean hasDataField = false
+
     message.split("\n").each { line ->
         if (line.startsWith("event:") && line.length() > 6) {
             eventType = line.substring(6).trim()
-        } else if (line.startsWith("data:") && line.length() > 5) {
-            dataPayload = line.substring(5).trim()
+        } else if (line.startsWith("data:")) {
+            hasDataField = true
+            def value = line.length() > 5 ? line.substring(5).trim() : ""
+            if (value) dataPayload = value
         }
     }
 
@@ -894,6 +901,11 @@ private void processSSEMessage(String message) {
         processEventPayload(dataPayload, eventType)
     } else if (dataPayload) {
         processEventPayload(dataPayload)
+    } else if (hasDataField && !dataPayload) {
+        // Keep-alive: SSE message with data: field but no payload
+        // Home Connect sends these every ~55s without an event: KEEP-ALIVE field
+        logDebug("Keep-alive received (empty data field)")
+        updateEventStats("KEEP-ALIVE")
     }
 }
 
