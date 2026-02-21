@@ -817,7 +817,7 @@ private void updateEventStats(String eventType) {
     if (eventType != "KEEP-ALIVE") {
         state.lastRealEventTime = now()
         state.lastRealEventType = eventType
-        logInfo("Real event received: ${eventType} (total: ${state.eventStats[eventType]})")
+        logDebug("Real event received: ${eventType} (total: ${state.eventStats[eventType]})")
     }
 }
 
@@ -964,7 +964,7 @@ private void processEventPayload(String payload, String eventType = null) {
                     eventType: eventType
                 ]
 
-                logInfo("Received event: ${eventType} - ${item.key} = ${item.value} for ${haId}")
+                logDebug("Received event: ${eventType} - ${item.key} = ${item.value} for ${haId}")
                 updateEventStats(eventType ?: "STATUS")
                 trackApplianceEvent(haId, eventType ?: "STATUS", item.key)
                 parent?.handleApplianceEvent(evt)
@@ -1143,14 +1143,32 @@ def apiDelete(String path, Closure closure) {
  */
 private void extractRateLimitHeaders(response) {
     try {
-        def headers = response.getHeaders()
+        def headers = response.headers
+        if (headers == null) {
+            logDebug("extractRateLimitHeaders: response.headers is null")
+            return
+        }
 
-        // Try different header name formats (Home Connect uses X-RateLimit-*)
-        def remaining = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Remaining') }?.value
-        def limit = headers?.find { it.name?.equalsIgnoreCase('X-RateLimit-Limit') }?.value
+        // Log all header names at debug level to diagnose missing rate-limit headers
+        def headerNames = []
+        headers.each { headerNames << it.name }
+        logDebug("Response headers: ${headerNames}")
+
+        // Hubitat httpGet response headers are Apache Header objects; iterate to find rate-limit headers
+        String remaining = null
+        String limit = null
+        headers.each { hdr ->
+            if (hdr.name?.equalsIgnoreCase('X-RateLimit-Remaining')) remaining = hdr.value
+            if (hdr.name?.equalsIgnoreCase('X-RateLimit-Limit'))      limit     = hdr.value
+            // Also check without the X- prefix in case the API varies
+            if (hdr.name?.equalsIgnoreCase('RateLimit-Remaining'))    remaining = hdr.value
+            if (hdr.name?.equalsIgnoreCase('RateLimit-Limit'))        limit     = hdr.value
+        }
+
+        logDebug("Rate limit header values - remaining: ${remaining}, limit: ${limit}")
 
         if (remaining != null) {
-            def remainingInt = remaining.toString().toInteger()
+            def remainingInt = remaining.toString().trim().toInteger()
             def previousRemaining = device.currentValue("rateLimitRemaining") as Integer
             sendEvent(name: "rateLimitRemaining", value: remainingInt)
             logDebug("Rate limit remaining: ${remainingInt}")
@@ -1171,12 +1189,12 @@ private void extractRateLimitHeaders(response) {
         }
 
         if (limit != null) {
-            def limitInt = limit.toString().toInteger()
+            def limitInt = limit.toString().trim().toInteger()
             sendEvent(name: "rateLimitLimit", value: limitInt)
             logDebug("Rate limit total: ${limitInt}")
         }
     } catch (Exception e) {
-        logDebug("Could not extract rate limit headers: ${e.message}")
+        logWarn("Could not extract rate limit headers: ${e.message}")
     }
 }
 

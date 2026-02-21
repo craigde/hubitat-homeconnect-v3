@@ -510,6 +510,28 @@ def initializeStatus(device, boolean checkActiveProgram = true) {
 }
 
 /**
+ * Fetches the currently active program for a device
+ * Called by child drivers when a cycle starts to get initial timing data
+ */
+def fetchActiveProgram(device) {
+    def haId = getHaIdFromDevice(device)
+    def streamDriver = getStreamDriver()
+
+    if (!streamDriver) return
+
+    logDebug("Fetching active program for simulator device ${haId}")
+    try {
+        streamDriver.getActiveProgram(haId) { activeProgram ->
+            if (activeProgram != null) {
+                device.z_parseActiveProgram(JsonOutput.toJson(activeProgram))
+            }
+        }
+    } catch (Exception e) {
+        logDebug("No active program for ${haId}: ${e.message}")
+    }
+}
+
+/**
  * Starts a program on an appliance
  */
 def startProgram(device, String programKey, def options = "") {
