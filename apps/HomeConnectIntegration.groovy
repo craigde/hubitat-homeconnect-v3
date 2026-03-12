@@ -626,12 +626,21 @@ private String getHaIdFromDevice(device) {
 def initializeStatus(device, boolean checkActiveProgram = true) {
     def haId = getHaIdFromDevice(device)
     def streamDriver = getStreamDriver()
-    
+
     if (!streamDriver) {
         logError("Stream Driver not available")
         return
     }
-    
+
+    // Check if the SSE stream is connected; if not, trigger reconnection
+    // This ensures that user-initiated "Initialize and Configure" on a child device
+    // also recovers a broken event stream, not just REST API state
+    def streamStatus = streamDriver.currentValue("connectionStatus")
+    if (streamStatus != "connected" && streamStatus != "connecting") {
+        logWarn("SSE stream not connected (${streamStatus}) - triggering reconnect")
+        streamDriver.connect()
+    }
+
     logDebug("Initializing status for ${haId}")
 
     // Fetch current status - some appliance types may not support this
