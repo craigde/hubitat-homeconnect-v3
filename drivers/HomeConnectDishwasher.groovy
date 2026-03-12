@@ -113,6 +113,9 @@
  *                     Seeds programStartTime from derived state when missing
  *                     Deferred jsonState and derived state updates for SSE events
  *                     Ensures sendEvent values persist before device.currentValue() is read
+ *  3.1.12 2026-03-12  Added Ambient Light (Emotion Light) support for Siemens dishwashers
+ *                     Handles AmbientLightEnabled, AmbientLightBrightness, AmbientLightColor
+ *                     Previously logged as "Unhandled event" on SX878D26PE and similar models
  */
 
 import groovy.json.JsonSlurper
@@ -245,6 +248,11 @@ metadata {
         attribute "HygienePlus", "string"
         attribute "interiorLight", "enum", ["on", "off"]
 
+        // Ambient Light (Emotion Light) - Siemens premium dishwashers
+        attribute "ambientLightEnabled", "string"       // true/false
+        attribute "ambientLightBrightness", "number"    // 0-100 percent
+        attribute "ambientLightColor", "string"         // Color name (e.g., "white")
+
         // =====================================================================
         // ATTRIBUTES - Forecasts
         // =====================================================================
@@ -320,7 +328,7 @@ metadata {
    CONSTANTS
    =========================================================================================================== */
 
-@Field static final String DRIVER_VERSION = "3.1.11"
+@Field static final String DRIVER_VERSION = "3.1.12"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 /* ===========================================================================================================
@@ -1229,6 +1237,20 @@ def parseEvent(Map evt) {
                 logInfo("Program was aborted")
                 sendAlert("ProgramAborted", "Dishwasher program was aborted")
             }
+            break
+
+        // ===== Ambient Light (Emotion Light) - Siemens =====
+        case "BSH.Common.Setting.AmbientLightEnabled":
+            sendEvent(name: "ambientLightEnabled", value: evt.value.toString())
+            break
+
+        case "BSH.Common.Setting.AmbientLightBrightness":
+            sendEvent(name: "ambientLightBrightness", value: safeToInteger(evt.value))
+            break
+
+        case "BSH.Common.Setting.AmbientLightColor":
+            // Use displayvalue (e.g., "white") if available, otherwise extract enum
+            sendEvent(name: "ambientLightColor", value: evt.displayvalue ?: extractEnum(evt.value))
             break
 
         // ===== Unhandled =====

@@ -126,6 +126,13 @@
  *                     "data:" (no event: field, no JSON payload). Previous code required
  *                     line.length() > 5 which silently dropped them. Now detected via
  *                     hasDataField with no payload. KEEP-ALIVE counter works correctly.
+ *  3.3.19 2026-03-12  Fix SSE stream not auto-recovering after connection loss.
+ *                     Watchdog now uses persistent cron schedule instead of fragile runIn() chain.
+ *                     Watchdog now auto-recovers from ALL non-connected states (was only "connected").
+ *                     Fixed connect() being blocked by stale "connecting" status (60s timeout added).
+ *                     Fixed processingDisconnect flag getting stuck (cleared on every connect attempt).
+ *                     Child device "Initialize and Configure" now also reconnects broken SSE stream.
+ *                     Resolves issue where all appliance status updates stop after stream disconnect.
  *  3.3.17 2026-02-21  Add self-tracked API call counter (apiCallsToday attribute) with
  *                     per-method/category breakdown.  Counter resets are synced to Home
  *                     Connect's own window via X-RateLimit-Remaining header (when it jumps
@@ -187,7 +194,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.18"
+@Field static final String DRIVER_VERSION = "3.3.19"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -236,9 +243,14 @@ def initialize() {
     logInfo("Initializing Home Connect Stream Driver v${DRIVER_VERSION}")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
 
-    // Always ensure watchdog is running (even if already connected)
+    // Use a persistent cron schedule for the watchdog so it always runs,
+    // even if a one-shot runIn() was lost due to hub restart or state corruption.
+    // Runs every 5 minutes. This replaces the fragile one-shot runIn() chain.
     unschedule("streamWatchdog")
-    runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
+    schedule("0 */5 * * * ?", "streamWatchdog")
+
+    // Clear any stuck state that might prevent reconnection
+    state.processingDisconnect = false
 
     connect()
 }
@@ -282,11 +294,24 @@ def connect() {
     // Cancel any previously scheduled connect() calls to prevent overlap
     unschedule("connect")
 
+    // Clear stuck processingDisconnect flag (prevents silent ignoring of disconnect events)
+    state.processingDisconnect = false
+
     // Check if we're already connecting or connected
     def currentStatus = device.currentValue("connectionStatus")
-    if (currentStatus == "connecting" || currentStatus == "connected") {
-        logDebug("Already ${currentStatus} - ignoring duplicate connect() call")
+    if (currentStatus == "connected") {
+        logDebug("Already connected - ignoring duplicate connect() call")
         return
+    }
+    if (currentStatus == "connecting") {
+        // Check if we've been stuck in "connecting" state for too long (> 60 seconds)
+        def connectStart = state.lastConnectAttemptTime ?: 0
+        if (connectStart > 0 && (now() - connectStart) < 60000) {
+            logDebug("Already connecting (${((now() - connectStart) / 1000).toInteger()}s ago) - waiting")
+            return
+        }
+        logWarn("Stuck in 'connecting' state for over 60s - forcing reconnect")
+        sendEvent(name: "connectionStatus", value: "disconnected")
     }
 
     // Check if we're rate limited
@@ -326,6 +351,9 @@ def connect() {
     def language = parent?.getLanguage() ?: "en-US"
     def apiUrl = getApiUrl()
     logDebug("Connecting to: ${apiUrl}${ENDPOINT_APPLIANCES}/events")
+
+    // Track connect attempt time for "connecting" state timeout detection
+    state.lastConnectAttemptTime = now()
 
     try {
         interfaces.eventStream.connect(
@@ -485,9 +513,10 @@ def eventStreamStatus(String status) {
         state.lastParseTime = now()        // Initialize for watchdog
         state.processingDisconnect = false  // Clear disconnect processing flag
 
-        // Start stream health watchdog
+        // Ensure persistent watchdog schedule is running
+        // Uses cron schedule so it survives hub restarts and state corruption
         unschedule("streamWatchdog")
-        runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
+        schedule("0 */5 * * * ?", "streamWatchdog")
 
         // Always refresh device status on reconnect to recover any missed events
         def previousDisconnectTime = state.lastDisconnectTime ?: 0
@@ -571,9 +600,27 @@ def notifyParentReconnected() {
 def streamWatchdog() {
     def currentStatus = device.currentValue("connectionStatus")
 
-    // Only check if we think we're connected
+    // Handle non-connected states: attempt auto-recovery
     if (currentStatus != "connected") {
-        logDebug("Stream watchdog: not connected (${currentStatus}) - skipping check")
+        // Check if we're rate limited - don't interfere
+        if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
+            logDebug("Stream watchdog: rate limited - waiting for expiry")
+            return
+        }
+
+        // If we're in a terminal/stuck state, attempt to reconnect
+        if (currentStatus == "connecting") {
+            // Check for stuck "connecting" state (handled by connect() itself)
+            logDebug("Stream watchdog: still connecting - will check again")
+            return
+        }
+
+        // For all other non-connected states (disconnected, failed, error, etc.),
+        // attempt auto-recovery by reconnecting
+        logWarn("Stream watchdog: not connected (${currentStatus}) - attempting auto-recovery")
+        state.processingDisconnect = false
+        state.reconnectAttempts = 0  // Reset attempts so we don't hit the max limit
+        connect()
         return
     }
 
@@ -620,9 +667,6 @@ def streamWatchdog() {
         if (settings?.verboseStreamDiag) {
             logStreamHealthDiagnostics(elapsed)
         }
-
-        // Schedule next watchdog check
-        runIn(STREAM_WATCHDOG_INTERVAL, "streamWatchdog")
     }
 }
 
