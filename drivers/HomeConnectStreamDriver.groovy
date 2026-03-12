@@ -126,6 +126,10 @@
  *                     "data:" (no event: field, no JSON payload). Previous code required
  *                     line.length() > 5 which silently dropped them. Now detected via
  *                     hasDataField with no payload. KEEP-ALIVE counter works correctly.
+ *  3.3.21 2026-03-12  Fixed connectionStatus showing "disconnected" while events still flowing.
+ *                     Hubitat can fire eventStreamStatus(STOP) while the SSE connection is still
+ *                     alive. parse() now corrects stale connectionStatus back to "connected" when
+ *                     data arrives, preventing false watchdog reconnects and status confusion.
  *  3.3.20 2026-03-12  Fixed disconnect() killing the persistent watchdog cron schedule.
  *                     Fixed refresh()/reconnect() race condition: two near-simultaneous calls
  *                     could create duplicate SSE connections via pauseExecution(). Now uses
@@ -198,7 +202,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.20"
+@Field static final String DRIVER_VERSION = "3.3.21"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -805,6 +809,19 @@ def parse(String text) {
 
     // Track last parse time for stream health watchdog
     state.lastParseTime = now()
+
+    // If we're receiving data, the stream IS connected - correct stale status.
+    // Hubitat can fire eventStreamStatus(STOP) while the connection is still alive,
+    // leaving connectionStatus as "disconnected" even though parse() is being called.
+    def currentStatus = device.currentValue("connectionStatus")
+    if (currentStatus != "connected") {
+        logInfo("Stream receiving data but status was '${currentStatus}' - correcting to 'connected'")
+        sendEvent(name: "connectionStatus", value: "connected")
+        state.connectionSucceeded = true
+        state.processingDisconnect = false
+        // Cancel any pending reconnect since we're actually connected
+        unschedule("connect")
+    }
 
     // Update lastEventReceived timestamp on any incoming data
     updateLastEventReceived()
