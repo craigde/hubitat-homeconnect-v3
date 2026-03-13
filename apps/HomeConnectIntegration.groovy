@@ -75,6 +75,8 @@
  *                     Promoted synchronizeDevices logging to INFO for visibility
  *  3.1.5  2026-02-05  Updated setup instructions for current Home Connect Developer portal interface
  *                     Clarified OAuth Flow dropdown, One Time Token, and Sync to China options
+ *  3.1.7  2026-03-13  refreshAllDeviceStatus() now checks if stream driver is rate limited
+ *                     before making API calls, preventing re-triggering of rate limits on reconnect.
  */
 
 import groovy.json.JsonSlurper
@@ -99,7 +101,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.1.6"
+@Field static final String APP_VERSION = "3.1.7"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -593,7 +595,14 @@ def handleCommandError(String haId, String errorType, String errorMessage) {
  */
 def refreshAllDeviceStatus() {
     logInfo("Refreshing status for all devices after reconnect")
-    
+
+    // Check if stream driver is rate limited before making API calls
+    def streamDriver = getStreamDriver()
+    if (streamDriver?.currentValue("connectionStatus")?.startsWith("rate limited")) {
+        logWarn("Stream driver is rate limited - skipping device refresh")
+        return
+    }
+
     getChildDevices().each { child ->
         if (child.deviceNetworkId != STREAM_DRIVER_DNI) {
             try {

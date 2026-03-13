@@ -148,6 +148,12 @@
  *                     API-reported remaining count.  showApiUsage/resetApiCounter commands.
  *                     Auto-detect driver code updates (HPM) via checkDriverVersion() in
  *                     parse() — triggers re-initialize on first event after an update.
+ *  3.3.22 2026-03-13  Fixed apiGet() not checking rate limit state — GET requests now
+ *                     blocked when rate limited, preventing API call bursts on reconnect
+ *                     that would re-trigger rate limiting.
+ *                     Fixed notifyParentReconnected() firing device refresh while rate limited.
+ *                     HTTP 429 handler now uses 1-hour backoff (was 60s) and won't override
+ *                     longer SSE-derived rate limit periods.
  */
 
 import groovy.json.JsonSlurper
@@ -202,7 +208,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.21"
+@Field static final String DRIVER_VERSION = "3.3.22"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -592,6 +598,11 @@ def eventStreamStatus(String status) {
  * Called by parent app after reconnection to refresh all device status
  */
 def notifyParentReconnected() {
+    // Don't refresh if we became rate limited between scheduling and executing
+    if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
+        logWarn("Skipping device refresh - rate limited until ${state.rateLimitedUntilFormatted}")
+        return
+    }
     logInfo("Notifying parent to refresh device status")
     parent?.refreshAllDeviceStatus()
 }
@@ -1059,12 +1070,19 @@ private void processEventPayload(String payload, String eventType = null) {
 def apiGet(String path, Closure closure) {
     def token = parent?.getOAuthToken()
     def language = parent?.getLanguage() ?: "en-US"
-    
+
     if (!token) {
         logError("No OAuth token for API GET")
         return
     }
-    
+
+    // Check rate limit before making request (same guard as apiPut/apiDelete)
+    if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
+        def rateLimitTime = state.rateLimitedUntilFormatted ?: formatDateTime(state.rateLimitedUntil)
+        logWarn("Cannot connect - rate limited until ${rateLimitTime}")
+        return
+    }
+
     logDebug("API GET: ${path}")
     trackApiCall("GET", path)
 
@@ -1415,7 +1433,15 @@ private void handleHttpError(String method, String path, groovyx.net.http.HttpRe
         case 429:
             logError("API ${method} 429 Rate Limited")
             sendEvent(name: "rateLimitRemaining", value: 0)
-            state.rateLimitedUntil = now() + 60000  // Back off for 1 minute
+            // Only set rate limit if not already set to a longer period (e.g. from SSE stream)
+            def rateLimitBackoff = now() + (3600 * 1000)  // Default: 1 hour backoff for HTTP 429
+            if (!state.rateLimitedUntil || state.rateLimitedUntil < rateLimitBackoff) {
+                state.rateLimitedUntil = rateLimitBackoff
+                def rateLimitTime = formatDateTime(rateLimitBackoff)
+                state.rateLimitedUntilFormatted = rateLimitTime
+                sendEvent(name: "connectionStatus", value: "rate limited until ${rateLimitTime}")
+                logError("Rate limited until ${rateLimitTime}")
+            }
             break
             
         case 503:
