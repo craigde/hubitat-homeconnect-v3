@@ -154,6 +154,12 @@
  *                     Fixed notifyParentReconnected() firing device refresh while rate limited.
  *                     HTTP 429 handler now uses 1-hour backoff (was 60s) and won't override
  *                     longer SSE-derived rate limit periods.
+ *                     Fixed eventStreamStatus(STOP) overwriting "rate limited" connectionStatus
+ *                     with "disconnected", hiding rate limit from user.
+ *                     Watchdog now logs rate limit expiry time instead of generic message.
+ *                     Connection bounce (connect→immediate disconnect) no longer triggers
+ *                     notifyParentReconnected device refresh.
+ *                     clearRateLimit now warns that server-side limits may still apply.
  */
 
 import groovy.json.JsonSlurper
@@ -416,7 +422,10 @@ def disconnect() {
  * Use after rate limit has expired if auto-reconnect hasn't triggered
  */
 def clearRateLimit() {
-    logInfo("Clearing rate limit state manually")
+    logInfo("Clearing local rate limit state manually")
+    logWarn("Note: This clears the LOCAL rate limit tracking only. If Home Connect's server-side " +
+            "rate limit is still active, connecting will re-trigger the rate limit. " +
+            "Wait for the full rate limit period to expire before clicking Initialize.")
 
     // Cancel any scheduled reconnects
     unschedule("connect")
@@ -426,6 +435,7 @@ def clearRateLimit() {
     state.reconnectAttempts = 0
     state.processingDisconnect = false
     sendEvent(name: "connectionStatus", value: "disconnected")
+    sendEvent(name: "rateLimitRemaining", value: 0)
 }
 
 /**
@@ -533,12 +543,14 @@ def eventStreamStatus(String status) {
         unschedule("streamWatchdog")
         schedule("0 */5 * * * ?", "streamWatchdog")
 
-        // Always refresh device status on reconnect to recover any missed events
+        // Refresh device status on reconnect to recover any missed events
+        // Use runIn(5) to avoid triggering refresh on connection bounces (connect→immediate disconnect
+        // from rate limiting). notifyParentReconnected checks if still connected before proceeding.
         def previousDisconnectTime = state.lastDisconnectTime ?: 0
         if (previousDisconnectTime > 0) {
             def disconnectedDuration = now() - previousDisconnectTime
-            logInfo("Reconnected after ${(disconnectedDuration/1000).toInteger()}s - refreshing device status")
-            runIn(2, "notifyParentReconnected")
+            logInfo("Reconnected after ${(disconnectedDuration/1000).toInteger()}s - scheduling device status refresh")
+            runIn(5, "notifyParentReconnected")
         }
 
     } else if (status.contains("STOP") || status.contains("ERROR")) {
@@ -549,8 +561,15 @@ def eventStreamStatus(String status) {
         }
         state.processingDisconnect = true
 
-        // Connection lost
-        sendEvent(name: "connectionStatus", value: "disconnected")
+        // Connection lost - but don't overwrite rate limit status
+        // parse() may have already called handleRateLimitError() which sets the correct status
+        if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
+            def rateLimitTime = state.rateLimitedUntilFormatted ?: formatDateTime(state.rateLimitedUntil)
+            sendEvent(name: "connectionStatus", value: "rate limited until ${rateLimitTime}")
+            logWarn("Stream disconnected while rate limited - status preserved as rate limited until ${rateLimitTime}")
+        } else {
+            sendEvent(name: "connectionStatus", value: "disconnected")
+        }
         state.lastDisconnectTime = now()
 
         // Check for "Too many follow-up requests" error - needs special handling
@@ -603,6 +622,12 @@ def notifyParentReconnected() {
         logWarn("Skipping device refresh - rate limited until ${state.rateLimitedUntilFormatted}")
         return
     }
+    // Don't refresh if connection bounced (connected then immediately disconnected)
+    def currentStatus = device.currentValue("connectionStatus")
+    if (currentStatus != "connected") {
+        logWarn("Skipping device refresh - no longer connected (${currentStatus})")
+        return
+    }
     logInfo("Notifying parent to refresh device status")
     parent?.refreshAllDeviceStatus()
 }
@@ -624,7 +649,14 @@ def streamWatchdog() {
     if (currentStatus != "connected") {
         // Check if we're rate limited - don't interfere
         if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
-            logDebug("Stream watchdog: rate limited - waiting for expiry")
+            def remainingMin = ((state.rateLimitedUntil - now()) / 60000).toInteger()
+            def expiryTime = state.rateLimitedUntilFormatted ?: formatDateTime(state.rateLimitedUntil)
+            logDebug("Stream watchdog: rate limited - expires ${expiryTime} (${remainingMin} min remaining)")
+            // Ensure connectionStatus reflects rate limit (may have been overwritten)
+            def currentStatusValue = device.currentValue("connectionStatus")
+            if (currentStatusValue == "disconnected") {
+                sendEvent(name: "connectionStatus", value: "rate limited until ${expiryTime}")
+            }
             return
         }
 
