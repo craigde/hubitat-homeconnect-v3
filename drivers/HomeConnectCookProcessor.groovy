@@ -47,6 +47,10 @@
  *  3.1.1  2026-02-20  Auto-initialize on driver code update
  *                     updated() now detects version change and calls initialize()
  *                     Eliminates need to manually click Initialize after HPM update
+ *  3.1.2  2026-04-07  Added auto-off timer for debug/trace logging
+ *                     New "debugAutoOffMinutes" preference (default 30 minutes, 0 to disable)
+ *                     Automatically disables debug and trace logging after the configured time
+ *                     so users do not accidentally leave verbose logs running indefinitely
  */
 
 import groovy.json.JsonSlurper
@@ -230,6 +234,10 @@ metadata {
     preferences {
         input name: "debugLogging", type: "bool", title: "Enable debug logging", defaultValue: false
         input name: "traceLogging", type: "bool", title: "Enable trace logging", defaultValue: false
+        input name: "debugAutoOffMinutes", type: "number",
+              title: "Auto-disable debug/trace logging after (minutes)",
+              description: "Default 30. Set to 0 to never auto-disable. Max 10080 (7 days).",
+              defaultValue: 30, required: false, range: "0..10080"
         input name: "logRawEvents", type: "bool", title: "Log raw events", defaultValue: false
         input name: "maxRecentEvents", type: "number", title: "Recent events to keep", defaultValue: 20
         input name: "defaultTemperature", type: "number", title: "Default Temperature (°C)",
@@ -245,7 +253,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.1"
+@Field static final String DRIVER_VERSION = "3.1.2"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 @Field static final Map COOK_PROGRAMS = [
@@ -305,6 +313,36 @@ def updated() {
         runIn(1, "initialize")
     }
     if (state.discoveredKeys == null) initializeState()
+    scheduleDebugLogsOff()
+}
+
+/**
+ * Schedules automatic disabling of debug/trace logging based on debugAutoOffMinutes preference.
+ * Called from updated() so a fresh timer is armed each time the user saves preferences.
+ */
+private void scheduleDebugLogsOff() {
+    unschedule("debugLogsOff")
+    if (!(settings?.debugLogging || settings?.traceLogging)) return
+
+    Integer autoOffMin = (settings?.debugAutoOffMinutes != null)
+        ? (settings.debugAutoOffMinutes as Integer)
+        : 30
+    if (autoOffMin <= 0) {
+        logInfo("Debug/trace logging auto-off is disabled (debugAutoOffMinutes=0)")
+        return
+    }
+    runIn(autoOffMin * 60, "debugLogsOff")
+    logInfo("Debug/trace logging will auto-disable in ${autoOffMin} minute(s)")
+}
+
+/**
+ * Auto-off handler invoked by the scheduled runIn() in scheduleDebugLogsOff().
+ * Turns both debugLogging and traceLogging off so verbose logs do not run forever.
+ */
+def debugLogsOff() {
+    log.warn "${device.displayName}: Auto-disabling debug/trace logging (auto-off timer expired)"
+    device.updateSetting("debugLogging", [value: "false", type: "bool"])
+    device.updateSetting("traceLogging", [value: "false", type: "bool"])
 }
 
 private void initializeState() {

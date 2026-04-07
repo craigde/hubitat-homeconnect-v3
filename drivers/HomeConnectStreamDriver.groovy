@@ -160,6 +160,10 @@
  *                     Connection bounce (connect→immediate disconnect) no longer triggers
  *                     notifyParentReconnected device refresh.
  *                     clearRateLimit now warns that server-side limits may still apply.
+ *  3.3.24 2026-04-07  Added auto-off timer for debug logging
+ *                     New "debugAutoOffMinutes" preference (default 30 minutes, 0 to disable)
+ *                     Automatically disables debug logging after the configured time so users
+ *                     do not accidentally leave verbose logs running indefinitely
  */
 
 import groovy.json.JsonSlurper
@@ -205,6 +209,10 @@ metadata {
               description: "Enable detailed logging for troubleshooting. Disable for normal operation."
         input name: "verboseStreamDiag", type: "bool", title: "Enable verbose stream diagnostics", defaultValue: false,
               description: "Logs detailed stream health: per-appliance event times, KEEP-ALIVE vs real event gaps. Toggle on to diagnose stale event issues."
+        input name: "debugAutoOffMinutes", type: "number",
+              title: "Auto-disable debug logging after (minutes)",
+              description: "Default 30. Set to 0 to never auto-disable. Max 10080 (7 days).",
+              defaultValue: 30, required: false, range: "0..10080"
     }
 }
 
@@ -214,7 +222,7 @@ metadata {
 
 @Field static final String DEFAULT_API_URL = "https://api.home-connect.com"
 @Field static final String ENDPOINT_APPLIANCES = "/api/homeappliances"
-@Field static final String DRIVER_VERSION = "3.3.23"
+@Field static final String DRIVER_VERSION = "3.3.24"
 
 // Reconnect timing constants
 @Field static final Integer NORMAL_RECONNECT_DELAY = 300      // 5 minutes after normal disconnect
@@ -252,6 +260,35 @@ def updated() {
         logInfo("Driver updated from ${previousVersion} to ${DRIVER_VERSION}, re-initializing")
         runIn(1, "initialize")
     }
+    scheduleDebugLogsOff()
+}
+
+/**
+ * Schedules automatic disabling of debug logging based on debugAutoOffMinutes preference.
+ * Called from updated() so a fresh timer is armed each time the user saves preferences.
+ */
+private void scheduleDebugLogsOff() {
+    unschedule("debugLogsOff")
+    if (!settings?.debugLogging) return
+
+    Integer autoOffMin = (settings?.debugAutoOffMinutes != null)
+        ? (settings.debugAutoOffMinutes as Integer)
+        : 30
+    if (autoOffMin <= 0) {
+        logInfo("Debug logging auto-off is disabled (debugAutoOffMinutes=0)")
+        return
+    }
+    runIn(autoOffMin * 60, "debugLogsOff")
+    logInfo("Debug logging will auto-disable in ${autoOffMin} minute(s)")
+}
+
+/**
+ * Auto-off handler invoked by the scheduled runIn() in scheduleDebugLogsOff().
+ * Turns debugLogging off so verbose logs do not run forever.
+ */
+def debugLogsOff() {
+    log.warn "${device.displayName}: Auto-disabling debug logging (auto-off timer expired)"
+    device.updateSetting("debugLogging", [value: "false", type: "bool"])
 }
 
 /**

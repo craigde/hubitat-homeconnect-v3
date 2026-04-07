@@ -77,6 +77,11 @@
  *                     Clarified OAuth Flow dropdown, One Time Token, and Sync to China options
  *  3.1.7  2026-03-13  refreshAllDeviceStatus() now checks if stream driver is rate limited
  *                     before making API calls, preventing re-triggering of rate limits on reconnect.
+ *  3.1.8  2026-04-07  Added auto-off timer for verbose log levels
+ *                     New "debugAutoOffMinutes" preference (default 30 minutes, 0 to disable)
+ *                     When logLevel is "debug" or "trace", automatically reverts the level back
+ *                     to the default after the configured time. Prevents users from forgetting
+ *                     and leaving verbose logs running indefinitely.
  */
 
 import groovy.json.JsonSlurper
@@ -101,7 +106,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.1.7"
+@Field static final String APP_VERSION = "3.1.8"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
@@ -132,6 +137,37 @@ def uninstalled() {
 def updated() {
     logInfo("Updating Home Connect Integration v3")
     synchronizeDevices()
+    scheduleDebugLogsOff()
+}
+
+/**
+ * Schedules automatic revert of verbose log levels (debug/trace) back to the
+ * default level after debugAutoOffMinutes. Called from updated() so a fresh
+ * timer is armed each time the user saves preferences.
+ */
+private void scheduleDebugLogsOff() {
+    unschedule("debugLogsOff")
+    String currentLevel = settings?.logLevel ?: DEFAULT_LOG_LEVEL
+    if (currentLevel != "debug" && currentLevel != "trace") return
+
+    Integer autoOffMin = (settings?.debugAutoOffMinutes != null)
+        ? (settings.debugAutoOffMinutes as Integer)
+        : 30
+    if (autoOffMin <= 0) {
+        logInfo("Verbose log level auto-off is disabled (debugAutoOffMinutes=0)")
+        return
+    }
+    runIn(autoOffMin * 60, "debugLogsOff")
+    logInfo("Log level '${currentLevel}' will auto-revert to '${DEFAULT_LOG_LEVEL}' in ${autoOffMin} minute(s)")
+}
+
+/**
+ * Auto-off handler invoked by the scheduled runIn() in scheduleDebugLogsOff().
+ * Reverts the app log level back to the default so verbose logs do not run forever.
+ */
+def debugLogsOff() {
+    log.warn "${app.name}: Auto-reverting log level to '${DEFAULT_LOG_LEVEL}' (auto-off timer expired)"
+    app.updateSetting("logLevel", [value: DEFAULT_LOG_LEVEL, type: "enum"])
 }
 
 /* ===========================================================================================================
@@ -201,9 +237,12 @@ This application connects your Home Connect smart appliances to Hubitat.
                   description: "This determines the language for appliance status messages"
         }
         section('Logging') {
-            input name: 'logLevel', title: 'Log Level', type: 'enum', options: LOG_LEVELS, 
+            input name: 'logLevel', title: 'Log Level', type: 'enum', options: LOG_LEVELS,
                   defaultValue: DEFAULT_LOG_LEVEL, required: false,
                   description: "Set to 'debug' for troubleshooting, 'warn' for normal operation"
+            input name: 'debugAutoOffMinutes', title: 'Auto-revert verbose log level after (minutes)',
+                  type: 'number', defaultValue: 30, required: false, range: "0..10080",
+                  description: "When log level is 'debug' or 'trace', automatically revert it to '${DEFAULT_LOG_LEVEL}' after this many minutes. Default 30. Set to 0 to never auto-revert. Max 10080 (7 days)."
         }
     }
 }
