@@ -53,6 +53,22 @@
  *  3.1.3  2026-02-20  Auto-initialize on driver code update
  *                     updated() now detects version change and calls initialize()
  *                     Eliminates need to manually click Initialize after HPM update
+ *  3.1.4  2026-07-08  Support Refrigeration.Common.* namespace on newer models
+ *                     Newer Bosch/Siemens fridges expose EcoMode, VacationMode,
+ *                     SabbathMode, FreshMode and the ice dispenser under
+ *                     Refrigeration.Common.Setting.* instead of the legacy
+ *                     Refrigeration.FridgeFreezer.Setting.* keys. Event parsing now
+ *                     accepts both namespaces, and setters use whichever key the
+ *                     appliance actually reports (falling back to the legacy key for
+ *                     older models), preserving backward compatibility.
+ *  3.1.5  2026-07-08  Fixed aggregate door contact/anyDoorOpen getting stuck open
+ *                     The generic BSH.Common.Status.DoorState event races ~30-200ms
+ *                     ahead of the per-compartment Door.* events. It no longer writes
+ *                     contact directly, and updateDoorStatus() now derives the aggregate
+ *                     solely from the authoritative per-compartment door attributes
+ *                     (falling back to the generic summary only for models that report
+ *                     no compartment doors). Removes the stale doorState from the
+ *                     calculation that could hold contact open after all doors closed.
  */
 
 import groovy.json.JsonSlurper
@@ -268,8 +284,23 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.3"
+@Field static final String DRIVER_VERSION = "3.1.5"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
+
+// Newer Bosch/Siemens fridges expose several settings under the shared
+// Refrigeration.Common.* namespace instead of the legacy Refrigeration.FridgeFreezer.*
+// namespace. Each logical setting maps to [legacyKey, commonKey]. The legacy key
+// (index 0) is the default for older models; resolveSettingKey() prefers whichever
+// key the appliance actually reported (recorded in parseEvent) so setters target the
+// namespace the appliance understands. Note the ice dispenser is NOT a simple prefix
+// swap - its key structure differs, so it needs an explicit mapping here.
+@Field static final Map SETTING_KEY_ALIASES = [
+    "EcoMode"     : ["Refrigeration.FridgeFreezer.Setting.EcoMode",            "Refrigeration.Common.Setting.EcoMode"],
+    "SabbathMode" : ["Refrigeration.FridgeFreezer.Setting.SabbathMode",        "Refrigeration.Common.Setting.SabbathMode"],
+    "VacationMode": ["Refrigeration.FridgeFreezer.Setting.VacationMode",       "Refrigeration.Common.Setting.VacationMode"],
+    "FreshMode"   : ["Refrigeration.FridgeFreezer.Setting.FreshMode",          "Refrigeration.Common.Setting.FreshMode"],
+    "IceDispenser": ["Refrigeration.FridgeFreezer.Setting.IceDispenserEnabled", "Refrigeration.Common.Setting.Dispenser.Enabled"]
+]
 
 // =============================================================================
 // LIFECYCLE METHODS
@@ -528,28 +559,28 @@ def setEcoMode(String state) {
     boolean on = (state.toLowerCase() == "on")
     logInfo("Setting EcoMode: ${on ? 'ON' : 'OFF'}")
     recordCommand("setEcoMode", [state: state])
-    parent?.setSetting(device, "Refrigeration.FridgeFreezer.Setting.EcoMode", on)
+    parent?.setSetting(device, resolveSettingKey("EcoMode"), on)
 }
 
 def setSabbathMode(String state) {
     boolean on = (state.toLowerCase() == "on")
     logInfo("Setting SabbathMode: ${on ? 'ON' : 'OFF'}")
     recordCommand("setSabbathMode", [state: state])
-    parent?.setSetting(device, "Refrigeration.FridgeFreezer.Setting.SabbathMode", on)
+    parent?.setSetting(device, resolveSettingKey("SabbathMode"), on)
 }
 
 def setVacationMode(String state) {
     boolean on = (state.toLowerCase() == "on")
     logInfo("Setting VacationMode: ${on ? 'ON' : 'OFF'}")
     recordCommand("setVacationMode", [state: state])
-    parent?.setSetting(device, "Refrigeration.FridgeFreezer.Setting.VacationMode", on)
+    parent?.setSetting(device, resolveSettingKey("VacationMode"), on)
 }
 
 def setIceDispenser(String state) {
     boolean on = (state.toLowerCase() == "on")
     logInfo("Setting IceDispenser: ${on ? 'ON' : 'OFF'}")
     recordCommand("setIceDispenser", [state: state])
-    parent?.setSetting(device, "Refrigeration.FridgeFreezer.Setting.IceDispenserEnabled", on)
+    parent?.setSetting(device, resolveSettingKey("IceDispenser"), on)
 }
 
 def setDispenserMode(String mode) {
@@ -669,6 +700,25 @@ def z_deviceLog(String level, String msg) {
 // EVENT PARSING
 // =============================================================================
 
+// Records the actual API key an appliance reports for a logical setting, so setters
+// can target the correct namespace (legacy vs Refrigeration.Common.*) on this model.
+private void recordObservedSettingKey(String logicalName, String key) {
+    if (!key) return
+    if (state.observedSettingKeys == null) state.observedSettingKeys = [:]
+    if (state.observedSettingKeys[logicalName] != key) {
+        state.observedSettingKeys[logicalName] = key
+        logDebug("Observed '${logicalName}' under key ${key}")
+    }
+}
+
+// Resolves the API key to use for a setter: the key this appliance actually reported,
+// or the legacy key (alias index 0) as a backward-compatible default.
+private String resolveSettingKey(String logicalName) {
+    def observed = state.observedSettingKeys?.get(logicalName)
+    if (observed) return observed
+    return SETTING_KEY_ALIASES[logicalName][0]
+}
+
 private void parseItemList(List items) {
     items?.each { item ->
         parseEvent([
@@ -704,9 +754,14 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Status.DoorState":
+            // Informational summary only. Do NOT write contact/anyDoorOpen directly here -
+            // this generic event consistently arrives ~30-200ms BEFORE the matching
+            // per-compartment Door.* event, so writing the aggregate from it races the
+            // authoritative compartment state and leaves contact stuck. updateDoorStatus()
+            // derives the aggregate from compartment attributes (falling back to this
+            // doorState only when the model reports no compartment events at all).
             def doorState = extractEnum(evt.value)
             sendEvent(name: "doorState", value: doorState)
-            sendEvent(name: "contact", value: (doorState == "Open" ? "open" : "closed"))
             updateDoorStatus()
             updateJsonState()
             break
@@ -834,29 +889,39 @@ def parseEvent(Map evt) {
             updateJsonState()
             break
 
-        // Other modes
+        // Other modes (legacy FridgeFreezer + newer Common namespace)
         case "Refrigeration.FridgeFreezer.Setting.EcoMode":
+        case "Refrigeration.Common.Setting.EcoMode":
+            recordObservedSettingKey("EcoMode", evt.key)
             def on = evt.value.toString().toLowerCase() == "true"
             sendEvent(name: "ecoMode", value: on ? "On" : "Off")
             break
 
         case "Refrigeration.FridgeFreezer.Setting.SabbathMode":
+        case "Refrigeration.Common.Setting.SabbathMode":
+            recordObservedSettingKey("SabbathMode", evt.key)
             def on = evt.value.toString().toLowerCase() == "true"
             sendEvent(name: "sabbathMode", value: on ? "On" : "Off")
             break
 
         case "Refrigeration.FridgeFreezer.Setting.VacationMode":
+        case "Refrigeration.Common.Setting.VacationMode":
+            recordObservedSettingKey("VacationMode", evt.key)
             def on = evt.value.toString().toLowerCase() == "true"
             sendEvent(name: "vacationMode", value: on ? "On" : "Off")
             break
 
         case "Refrigeration.FridgeFreezer.Setting.FreshMode":
+        case "Refrigeration.Common.Setting.FreshMode":
+            recordObservedSettingKey("FreshMode", evt.key)
             def on = evt.value.toString().toLowerCase() == "true"
             sendEvent(name: "freshMode", value: on ? "On" : "Off")
             break
 
-        // Dispenser
+        // Dispenser (legacy FridgeFreezer + newer Common namespace)
         case "Refrigeration.FridgeFreezer.Setting.IceDispenserEnabled":
+        case "Refrigeration.Common.Setting.Dispenser.Enabled":
+            recordObservedSettingKey("IceDispenser", evt.key)
             def on = evt.value.toString().toLowerCase() == "true"
             sendEvent(name: "dispenserEnabled", value: on ? "On" : "Off")
             break
@@ -943,18 +1008,27 @@ private void updatePrimaryTemperature() {
 }
 
 private void updateDoorStatus() {
-    def fridgeDoor = device.currentValue("fridgeDoorState")
-    def freezerDoor = device.currentValue("freezerDoorState")
-    def flexDoor = device.currentValue("flexZoneDoorState")
-    def flexCompartment = device.currentValue("flexCompartmentDoorState")
-    def chillerLeft = device.currentValue("chillerLeftDoorState")
-    def chillerRight = device.currentValue("chillerRightDoorState")
-    def mainDoor = device.currentValue("doorState")
+    // Per-compartment door events are the authoritative source of truth. The generic
+    // BSH.Common.Status.DoorState is deliberately excluded from this calculation: it
+    // races ahead of the compartment events, and a stale "Open" summary could otherwise
+    // hold contact/anyDoorOpen stuck open after every compartment has reported Closed.
+    def compartmentStates = [
+        device.currentValue("fridgeDoorState"),
+        device.currentValue("freezerDoorState"),
+        device.currentValue("flexZoneDoorState"),
+        device.currentValue("flexCompartmentDoorState"),
+        device.currentValue("chillerLeftDoorState"),
+        device.currentValue("chillerRightDoorState")
+    ]
 
-    def anyOpen = (fridgeDoor == "Open" || freezerDoor == "Open" ||
-                   flexDoor == "Open" || flexCompartment == "Open" ||
-                   chillerLeft == "Open" || chillerRight == "Open" ||
-                   mainDoor == "Open")
+    def anyOpen
+    if (compartmentStates.any { it != null }) {
+        // Model reports per-compartment doors - derive the aggregate solely from them.
+        anyOpen = compartmentStates.any { it == "Open" }
+    } else {
+        // Fallback for models that only emit the generic summary door state.
+        anyOpen = (device.currentValue("doorState") == "Open")
+    }
 
     sendEvent(name: "anyDoorOpen", value: anyOpen.toString())
     sendEvent(name: "contact", value: anyOpen ? "open" : "closed")
