@@ -61,6 +61,14 @@
  *                     accepts both namespaces, and setters use whichever key the
  *                     appliance actually reports (falling back to the legacy key for
  *                     older models), preserving backward compatibility.
+ *  3.1.5  2026-07-08  Fixed aggregate door contact/anyDoorOpen getting stuck open
+ *                     The generic BSH.Common.Status.DoorState event races ~30-200ms
+ *                     ahead of the per-compartment Door.* events. It no longer writes
+ *                     contact directly, and updateDoorStatus() now derives the aggregate
+ *                     solely from the authoritative per-compartment door attributes
+ *                     (falling back to the generic summary only for models that report
+ *                     no compartment doors). Removes the stale doorState from the
+ *                     calculation that could hold contact open after all doors closed.
  */
 
 import groovy.json.JsonSlurper
@@ -276,7 +284,7 @@ metadata {
 // CONSTANTS
 // =============================================================================
 
-@Field static final String DRIVER_VERSION = "3.1.4"
+@Field static final String DRIVER_VERSION = "3.1.5"
 @Field static final Integer MAX_DISCOVERED_KEYS = 100
 
 // Newer Bosch/Siemens fridges expose several settings under the shared
@@ -746,9 +754,14 @@ def parseEvent(Map evt) {
             break
 
         case "BSH.Common.Status.DoorState":
+            // Informational summary only. Do NOT write contact/anyDoorOpen directly here -
+            // this generic event consistently arrives ~30-200ms BEFORE the matching
+            // per-compartment Door.* event, so writing the aggregate from it races the
+            // authoritative compartment state and leaves contact stuck. updateDoorStatus()
+            // derives the aggregate from compartment attributes (falling back to this
+            // doorState only when the model reports no compartment events at all).
             def doorState = extractEnum(evt.value)
             sendEvent(name: "doorState", value: doorState)
-            sendEvent(name: "contact", value: (doorState == "Open" ? "open" : "closed"))
             updateDoorStatus()
             updateJsonState()
             break
@@ -995,18 +1008,27 @@ private void updatePrimaryTemperature() {
 }
 
 private void updateDoorStatus() {
-    def fridgeDoor = device.currentValue("fridgeDoorState")
-    def freezerDoor = device.currentValue("freezerDoorState")
-    def flexDoor = device.currentValue("flexZoneDoorState")
-    def flexCompartment = device.currentValue("flexCompartmentDoorState")
-    def chillerLeft = device.currentValue("chillerLeftDoorState")
-    def chillerRight = device.currentValue("chillerRightDoorState")
-    def mainDoor = device.currentValue("doorState")
+    // Per-compartment door events are the authoritative source of truth. The generic
+    // BSH.Common.Status.DoorState is deliberately excluded from this calculation: it
+    // races ahead of the compartment events, and a stale "Open" summary could otherwise
+    // hold contact/anyDoorOpen stuck open after every compartment has reported Closed.
+    def compartmentStates = [
+        device.currentValue("fridgeDoorState"),
+        device.currentValue("freezerDoorState"),
+        device.currentValue("flexZoneDoorState"),
+        device.currentValue("flexCompartmentDoorState"),
+        device.currentValue("chillerLeftDoorState"),
+        device.currentValue("chillerRightDoorState")
+    ]
 
-    def anyOpen = (fridgeDoor == "Open" || freezerDoor == "Open" ||
-                   flexDoor == "Open" || flexCompartment == "Open" ||
-                   chillerLeft == "Open" || chillerRight == "Open" ||
-                   mainDoor == "Open")
+    def anyOpen
+    if (compartmentStates.any { it != null }) {
+        // Model reports per-compartment doors - derive the aggregate solely from them.
+        anyOpen = compartmentStates.any { it == "Open" }
+    } else {
+        // Fallback for models that only emit the generic summary door state.
+        anyOpen = (device.currentValue("doorState") == "Open")
+    }
 
     sendEvent(name: "anyDoorOpen", value: anyOpen.toString())
     sendEvent(name: "contact", value: anyOpen ? "open" : "closed")
