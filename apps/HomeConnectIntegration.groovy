@@ -77,6 +77,9 @@
  *                     Clarified OAuth Flow dropdown, One Time Token, and Sync to China options
  *  3.1.7  2026-03-13  refreshAllDeviceStatus() now checks if stream driver is rate limited
  *                     before making API calls, preventing re-triggering of rate limits on reconnect.
+ *  3.1.8  2026-07-08  Added menu: 'Integrations' to definition() so the app is grouped under
+ *                     the Integrations section in the updated Hubitat UI (platform 2.5.0+).
+ *                     Ignored harmlessly on older platform versions (falls back to Apps).
  */
 
 import groovy.json.JsonSlurper
@@ -89,6 +92,7 @@ definition(
     author: 'Craig Dewar',
     description: 'Integrates Home Connect smart appliances with Hubitat (v3 architecture)',
     category: 'My Apps',
+    menu: 'Integrations',
     iconUrl: '',
     iconX2Url: '',
     iconX3Url: ''
@@ -101,7 +105,7 @@ definition(
 @Field static final List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field static final String DEFAULT_LOG_LEVEL = "warn"
 @Field static final String STREAM_DRIVER_DNI = "HC3-StreamDriver"
-@Field static final String APP_VERSION = "3.1.7"
+@Field static final String APP_VERSION = "3.1.8"
 
 // OAuth endpoints
 @Field static final String OAUTH_AUTHORIZATION_URL = 'https://api.home-connect.com/security/oauth/authorize'
